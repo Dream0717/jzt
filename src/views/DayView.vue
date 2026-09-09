@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getDay,
@@ -7,6 +7,7 @@ import {
   getStats,
   listRecords,
   updateRecordReason,
+  updateProblemOwner,
   uploadRemarkImage,
   deleteRemarkImage,
   remarkImageUrl,
@@ -16,22 +17,32 @@ const props = defineProps({ dayId: String })
 const router = useRouter()
 
 const day = ref(null)
+const scanRate = ref({ total: 0, customer_miss_count: 0, ok: 0 })
 const stats = ref([])
 const activeCategory = ref('') // '' = 全部
 const keyword = ref('')
 const records = ref([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = 50
+const pageSize = ref(50)
+const pageSizeOptions = [20, 50, 100, 200]
+const jumpPage = ref(1)
 const importing = ref(false)
 const loadingRecords = ref(false)
 
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+
+const scanRateText = computed(() => {
+  const t = scanRate.value.total || 0
+  if (!t) return ''
+  return `${scanRate.value.ok}/${t}`
+})
 
 async function refreshBase() {
   try {
     const [d, s] = await Promise.all([getDay(props.dayId), getStats(props.dayId)])
     day.value = d.day
+    scanRate.value = d.scan_rate || { total: 0, customer_miss_count: 0, ok: 0 }
     stats.value = s.stats
   } catch (e) {
     alert(e.message)
@@ -41,9 +52,21 @@ async function refreshBase() {
 async function refreshRecords() {
   loadingRecords.value = true
   try {
-    const data = await listRecords(props.dayId, activeCategory.value, keyword.value, page.value, pageSize)
-    records.value = data.records
+    const data = await listRecords(
+      props.dayId,
+      activeCategory.value,
+      keyword.value,
+      page.value,
+      pageSize.value
+    )
+    records.value = data.records.map((r) => ({
+      ...r,
+      reason_note: r.reason_note || '',
+      problem_owner: r.problem_owner || (r.category === '未提取到监管码' ? '我方' : ''),
+      has_remark_image: !!r.has_remark_image,
+    }))
     total.value = data.total
+    jumpPage.value = page.value
   } catch (e) {
     alert(e.message)
   } finally {
@@ -69,6 +92,21 @@ function flipPage(delta) {
   refreshRecords()
 }
 
+function changePageSize() {
+  page.value = 1
+  refreshRecords()
+}
+
+function goJumpPage() {
+  let p = Number(jumpPage.value)
+  if (!Number.isFinite(p)) p = 1
+  p = Math.min(Math.max(1, Math.floor(p)), totalPages.value)
+  jumpPage.value = p
+  if (p === page.value) return
+  page.value = p
+  refreshRecords()
+}
+
 async function onImport(e) {
   const file = e.target.files?.[0]
   if (!file) return
@@ -77,8 +115,12 @@ async function onImport(e) {
     e.target.value = ''
     return
   }
-  if (stats.value.length) {
-    if (!confirm('该日期已有数据，重新导入将先清空原有记录，是否继续？')) {
+  if (stats.value.length || (scanRate.value.total || 0) > 0) {
+    if (
+      !confirm(
+        '该日期已有数据。重新导入将覆盖（清空）原有全部记录及已填写的原因/备注/问题归属，是否继续？'
+      )
+    ) {
       e.target.value = ''
       return
     }
@@ -86,7 +128,7 @@ async function onImport(e) {
   importing.value = true
   try {
     const r = await importXls(props.dayId, file)
-    alert(`导入成功：共 ${r.total} 条，有效 ${r.imported} 条`)
+    alert(`导入成功：共 ${r.total} 条，有效 ${r.imported} 条（已写入数据库）`)
     await refreshBase()
     page.value = 1
     activeCategory.value = ''
@@ -112,7 +154,6 @@ async function copySerial(r) {
   try {
     await navigator.clipboard.writeText(text)
   } catch {
-    // 降级：选中临时 textarea
     const ta = document.createElement('textarea')
     ta.value = text
     ta.style.position = 'fixed'
@@ -129,10 +170,6 @@ async function copySerial(r) {
   }, 1200)
 }
 
-const statMap = computed(() => {
-  const m = new Map(stats.value.map((s) => [s.category, s.count]))
-  return m
-})
 const totalCount = computed(() => stats.value.reduce((a, s) => a + s.count, 0))
 
 const showIssueColumns = computed(() => {
@@ -141,7 +178,14 @@ const showIssueColumns = computed(() => {
   return records.value.some((r) => r.category !== '空')
 })
 
-const colSpan = computed(() => (showIssueColumns.value ? 11 : 9))
+const showOwnerColumn = computed(() => activeCategory.value === '未提取到监管码')
+
+const colSpan = computed(() => {
+  let n = 9
+  if (showIssueColumns.value) n += 2
+  if (showOwnerColumn.value) n += 1
+  return n
+})
 
 function isIssueRecord(r) {
   return r.category !== '空'
@@ -153,7 +197,7 @@ async function saveReason(r) {
   savingReasonId.value = r.id
   try {
     const data = await updateRecordReason(r.id, r.reason_note || '')
-    r.reason_note = data.reason_note
+    r.reason_note = data.reason_note || ''
   } catch (e) {
     alert(e.message)
   } finally {
@@ -161,13 +205,29 @@ async function saveReason(r) {
   }
 }
 
+const savingOwnerId = ref(null)
+async function saveOwner(r) {
+  if (r.category !== '未提取到监管码') return
+  savingOwnerId.value = r.id
+  try {
+    const data = await updateProblemOwner(r.id, r.problem_owner || '我方')
+    r.problem_owner = data.problem_owner
+    if (data.scan_rate) scanRate.value = data.scan_rate
+  } catch (e) {
+    alert(e.message)
+    await refreshRecords()
+  } finally {
+    savingOwnerId.value = null
+  }
+}
+
 const uploadingRemarkId = ref(null)
-async function onRemarkImage(e, r) {
-  const file = e.target.files?.[0]
-  e.target.value = ''
+const pasteFocusId = ref(null)
+
+async function uploadRemarkFile(r, file) {
   if (!file || !isIssueRecord(r)) return
   if (!file.type.startsWith('image/')) {
-    alert('请选择图片文件')
+    alert('请粘贴或选择图片文件')
     return
   }
   uploadingRemarkId.value = r.id
@@ -179,6 +239,25 @@ async function onRemarkImage(e, r) {
     alert(err.message)
   } finally {
     uploadingRemarkId.value = null
+  }
+}
+
+async function onRemarkImage(e, r) {
+  const file = e.target.files?.[0]
+  e.target.value = ''
+  await uploadRemarkFile(r, file)
+}
+
+async function onRemarkPaste(e, r) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault()
+      const file = item.getAsFile()
+      if (file) await uploadRemarkFile(r, file)
+      return
+    }
   }
 }
 
@@ -201,6 +280,10 @@ function closePreview() {
   previewImage.value = null
 }
 
+watch(page, (p) => {
+  jumpPage.value = p
+})
+
 onMounted(async () => {
   await refreshBase()
   await refreshRecords()
@@ -211,7 +294,12 @@ onMounted(async () => {
   <div class="page" v-if="day">
     <div class="nav-back">
       <button class="btn-ghost" @click="router.push(`/city/${day.city_id}`)">← 返回日期列表</button>
-      <span class="day-title">{{ day.city_name }} · {{ day.day_date }}</span>
+      <span class="day-title">
+        {{ day.city_name }} · {{ day.day_date }}
+        <span v-if="scanRate.total" class="scan-rate" title="读码率 = (全部 − 未提取到监管码且归属客户) / 全部">
+          读码率 <em>{{ scanRateText }}</em>
+        </span>
+      </span>
     </div>
 
     <div class="card import-bar">
@@ -219,7 +307,7 @@ onMounted(async () => {
         {{ importing ? '导入中…' : '📥 导入统计明细 (xls/xlsx)' }}
         <input type="file" accept=".xls,.xlsx" :disabled="importing" @change="onImport" />
       </label>
-      <span class="import-tip">按最后一列「补扫原因」自动分类（空 / 未提取到监管码 / 海康无记录 等）</span>
+      <span class="import-tip">导入后写入 MySQL；已有数据时会提示是否覆盖。按「补扫原因」自动分类。</span>
     </div>
 
     <div class="card stat-card" v-if="stats.length">
@@ -265,6 +353,7 @@ onMounted(async () => {
               <th>操作员</th>
               <th>操作时间</th>
               <th>补扫原因</th>
+              <th v-if="showOwnerColumn">问题归属</th>
               <th v-if="showIssueColumns">原因</th>
               <th v-if="showIssueColumns">备注</th>
             </tr>
@@ -321,6 +410,17 @@ onMounted(async () => {
               <td>
                 <span class="reason-tag" :class="{ 'reason-ok': r.category === '空' }">{{ r.category }}</span>
               </td>
+              <td v-if="showOwnerColumn" class="td-owner">
+                <select
+                  v-model="r.problem_owner"
+                  class="owner-select"
+                  :disabled="savingOwnerId === r.id"
+                  @change="saveOwner(r)"
+                >
+                  <option value="我方">我方</option>
+                  <option value="客户">客户</option>
+                </select>
+              </td>
               <td v-if="showIssueColumns" class="td-reason">
                 <template v-if="isIssueRecord(r)">
                   <input
@@ -336,16 +436,30 @@ onMounted(async () => {
               </td>
               <td v-if="showIssueColumns" class="td-remark">
                 <template v-if="isIssueRecord(r)">
-                  <div class="remark-cell">
+                  <div
+                    class="remark-paste"
+                    :class="{
+                      focused: pasteFocusId === r.id,
+                      uploading: uploadingRemarkId === r.id,
+                      hasimg: r.has_remark_image,
+                    }"
+                    tabindex="0"
+                    :title="r.has_remark_image ? '点击后 Ctrl+V 可替换图片' : '点击后 Ctrl+V 粘贴图片'"
+                    @click="pasteFocusId = r.id"
+                    @focus="pasteFocusId = r.id"
+                    @blur="pasteFocusId = null"
+                    @paste="onRemarkPaste($event, r)"
+                  >
                     <img
                       v-if="r.has_remark_image"
                       class="remark-thumb"
                       :src="remarkImageUrl(r.id, r._remarkVersion || r.id)"
                       alt="备注"
-                      @click="openPreview(r)"
+                      @click.stop="openPreview(r)"
                     />
-                    <label class="remark-upload" :class="{ uploading: uploadingRemarkId === r.id }">
-                      {{ uploadingRemarkId === r.id ? '上传中…' : r.has_remark_image ? '更换' : '上传图片' }}
+                    <span v-else class="remark-hint">{{ uploadingRemarkId === r.id ? '上传中…' : '点击后粘贴图片' }}</span>
+                    <label class="remark-upload" @click.stop>
+                      {{ r.has_remark_image ? '更换' : '选择' }}
                       <input
                         type="file"
                         accept="image/*"
@@ -358,7 +472,7 @@ onMounted(async () => {
                       type="button"
                       class="remark-del"
                       title="删除备注图片"
-                      @click="removeRemark(r)"
+                      @click.stop="removeRemark(r)"
                     >
                       ×
                     </button>
@@ -379,9 +493,28 @@ onMounted(async () => {
       </div>
 
       <div class="pager">
+        <label class="pager-size">
+          每页
+          <select v-model.number="pageSize" @change="changePageSize">
+            <option v-for="n in pageSizeOptions" :key="n" :value="n">{{ n }}</option>
+          </select>
+          条
+        </label>
         <button class="btn-ghost" :disabled="page <= 1" @click="flipPage(-1)">上一页</button>
         <span class="pager-info">{{ page }} / {{ totalPages }} 页 · 共 {{ total }} 条</span>
         <button class="btn-ghost" :disabled="page >= totalPages" @click="flipPage(1)">下一页</button>
+        <label class="pager-jump">
+          跳至
+          <input
+            v-model.number="jumpPage"
+            type="number"
+            min="1"
+            :max="totalPages"
+            @keyup.enter="goJumpPage"
+          />
+          页
+          <button class="btn-ghost" type="button" @click="goJumpPage">Go</button>
+        </label>
       </div>
     </div>
 
@@ -397,16 +530,22 @@ onMounted(async () => {
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 .day-title {
   font-size: 16px;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .import-bar {
   display: flex;
   align-items: center;
   gap: 14px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 .import-btn {
   display: inline-block;
@@ -473,10 +612,14 @@ onMounted(async () => {
   border-color: #2f6fed;
 }
 .table-wrap {
-  overflow-x: auto;
+  overflow: auto;
+  max-height: calc(100vh - 340px);
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
 }
 .rec-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -493,6 +636,7 @@ onMounted(async () => {
   font-weight: 600;
   position: sticky;
   top: 0;
+  z-index: 1;
 }
 .td-center {
   text-align: center;
@@ -559,12 +703,41 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
   margin-top: 12px;
 }
 .pager-info {
   font-size: 13px;
   color: #5b6779;
+}
+.pager-size,
+.pager-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #5b6779;
+}
+.pager-size select,
+.pager-jump input {
+  padding: 4px 8px;
+  border: 1px solid #d7dce5;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.pager-jump input {
+  width: 64px;
+}
+.td-owner {
+  min-width: 90px;
+}
+.owner-select {
+  padding: 5px 8px;
+  border: 1px solid #d7dce5;
+  border-radius: 4px;
+  font-size: 12px;
+  background: #fff;
 }
 .td-reason {
   min-width: 160px;
@@ -584,14 +757,34 @@ onMounted(async () => {
   border-color: #2f6fed;
 }
 .td-remark {
-  min-width: 120px;
+  min-width: 180px;
   white-space: normal;
 }
-.remark-cell {
+.remark-paste {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  min-height: 44px;
+  min-width: 160px;
+  padding: 6px 8px;
+  border: 1px dashed #c5cedb;
+  border-radius: 6px;
+  background: #fafbfd;
+  outline: none;
+  cursor: pointer;
+}
+.remark-paste.focused {
+  border-color: #2f6fed;
+  background: #eef3fd;
+  box-shadow: 0 0 0 2px rgba(47, 111, 237, 0.15);
+}
+.remark-paste.uploading {
+  opacity: 0.65;
+}
+.remark-hint {
+  font-size: 12px;
+  color: #8a94a6;
 }
 .remark-thumb {
   width: 40px;
@@ -599,7 +792,7 @@ onMounted(async () => {
   object-fit: cover;
   border-radius: 4px;
   border: 1px solid #d7dce5;
-  cursor: pointer;
+  cursor: zoom-in;
 }
 .remark-upload {
   position: relative;
@@ -611,10 +804,6 @@ onMounted(async () => {
   border-radius: 4px;
   cursor: pointer;
   overflow: hidden;
-}
-.remark-upload.uploading {
-  opacity: 0.6;
-  cursor: wait;
 }
 .remark-upload input {
   position: absolute;

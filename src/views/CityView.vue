@@ -68,6 +68,13 @@ function fmtWeek(dateStr) {
   return '周' + weeks[d.getDay()]
 }
 
+function scanRateOf(d) {
+  const total = Number(d.record_count) || 0
+  if (!total) return '—'
+  const miss = Number(d.customer_miss_count) || 0
+  return `${Math.max(0, total - miss)}/${total}`
+}
+
 onMounted(refresh)
 </script>
 
@@ -92,7 +99,12 @@ onMounted(refresh)
         <div class="day-date">{{ d.day_date }}</div>
         <div class="day-week">{{ fmtWeek(d.day_date) }}</div>
         <div class="day-meta">
-          <span v-if="d.record_count > 0">{{ d.record_count }} 条数据 · {{ d.category_count || 0 }} 类</span>
+          <span v-if="d.record_count > 0">
+            {{ d.record_count }} 条 · {{ d.category_count || 0 }} 类
+            <span class="scan-rate" title="读码率 = (全部 − 未提取到监管码且归属客户) / 全部">
+              读码率 <em>{{ scanRateOf(d) }}</em>
+            </span>
+          </span>
           <span v-else class="day-empty">未导入</span>
         </div>
         <button class="btn-danger day-del" @click.stop="removeDay(d)">删除</button>
@@ -163,6 +175,13 @@ onMounted(refresh)
   font-size: 12px;
   color: #2f6fed;
   margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.day-meta .scan-rate {
+  margin-left: 0;
 }
 .day-empty {
   color: #b0b8c7;

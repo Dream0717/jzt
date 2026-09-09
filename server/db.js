@@ -47,6 +47,7 @@ const SCHEMA_SQL = [
     reason_note VARCHAR(512) DEFAULT NULL,
     remark_image MEDIUMBLOB DEFAULT NULL,
     remark_image_mime VARCHAR(64) DEFAULT NULL,
+    problem_owner VARCHAR(16) DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     KEY idx_day_cat (day_id, category),
     KEY idx_day_goods (day_id, goods_name),
@@ -65,6 +66,8 @@ const MIGRATE_SQL = [
   `ALTER TABLE scan_record ADD COLUMN reason_note VARCHAR(512) DEFAULT NULL`,
   `ALTER TABLE scan_record ADD COLUMN remark_image MEDIUMBLOB DEFAULT NULL`,
   `ALTER TABLE scan_record ADD COLUMN remark_image_mime VARCHAR(64) DEFAULT NULL`,
+  `ALTER TABLE scan_record ADD COLUMN problem_owner VARCHAR(16) DEFAULT NULL`,
+  `UPDATE scan_record SET problem_owner = '我方' WHERE category = '未提取到监管码' AND (problem_owner IS NULL OR problem_owner = '')`,
 ]
 
 export async function initSchema() {

@@ -41,6 +41,12 @@ export const updateRecordReason = (id, reason_note) =>
     body: JSON.stringify({ reason_note }),
   })
 
+export const updateProblemOwner = (id, problem_owner) =>
+  request(`/api/records/${id}/problem-owner`, {
+    method: 'PATCH',
+    body: JSON.stringify({ problem_owner }),
+  })
+
 export const uploadRemarkImage = (id, file) => {
   const form = new FormData()
   form.append('file', file)

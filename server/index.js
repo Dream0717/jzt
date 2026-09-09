@@ -66,7 +66,8 @@ app.get(
     const [days] = await pool.query(
       `SELECT d.id, d.day_date, d.created_at,
               COUNT(r.id) AS record_count,
-              COUNT(DISTINCT r.category) AS category_count
+              COUNT(DISTINCT r.category) AS category_count,
+              SUM(CASE WHEN r.category = '未提取到监管码' AND r.problem_owner = '客户' THEN 1 ELSE 0 END) AS customer_miss_count
        FROM acceptance_day d
        LEFT JOIN scan_record r ON r.day_id = d.id
        WHERE d.city_id = ?
@@ -121,7 +122,20 @@ app.get(
       [req.params.id]
     )
     if (rows.length === 0) return res.status(404).json({ error: '日期不存在' })
-    res.json({ day: rows[0] })
+    const [[rate]] = await pool.query(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '客户' THEN 1 ELSE 0 END) AS customer_miss_count
+       FROM scan_record WHERE day_id = ?`,
+      [req.params.id]
+    )
+    res.json({
+      day: rows[0],
+      scan_rate: {
+        total: Number(rate.total) || 0,
+        customer_miss_count: Number(rate.customer_miss_count) || 0,
+        ok: Math.max(0, (Number(rate.total) || 0) - (Number(rate.customer_miss_count) || 0)),
+      },
+    })
   })
 )
 
@@ -142,10 +156,10 @@ app.post(
       // 重新导入 = 先清空当天旧数据
       await conn.query('DELETE FROM scan_record WHERE day_id = ?', [req.params.id])
 
-      const COLS = 14
+      const COLS = 15
       const sql = `INSERT INTO scan_record
         (day_id, doc_head_id, doc_no, serial_no, drug_code, goods_no, goods_name, spec,
-         manufacturer, operator, op_time, goods_inner_no, raw_reason, category)
+         manufacturer, operator, op_time, goods_inner_no, raw_reason, category, problem_owner)
         VALUES `
       const BATCH = 500
       for (let i = 0; i < records.length; i += BATCH) {
@@ -164,6 +178,7 @@ app.post(
           r.goods_inner_no || null,
           r.raw_reason || null,
           r.category,
+          r.category === '未提取到监管码' ? '我方' : null,
         ])
         const groups = chunk.map(() => `(${Array(COLS).fill('?').join(',')})`).join(',')
         await conn.query(sql + groups, chunk.flat()) // 手动展开多行占位符，mysql2 对嵌套数组展开不可靠
@@ -220,7 +235,7 @@ app.get(
       `SELECT id,
               COALESCE(NULLIF(doc_no, ''), doc_head_id) AS doc_no,
               serial_no, goods_name, spec, manufacturer, drug_code, operator, op_time, category,
-              reason_note,
+              reason_note, problem_owner,
               (remark_image IS NOT NULL) AS has_remark_image
        FROM scan_record WHERE ${whereSql}
        ORDER BY op_time DESC, id DESC
@@ -244,6 +259,39 @@ app.patch(
       req.params.id,
     ])
     res.json({ ok: true, reason_note: reasonNote || null })
+  })
+)
+
+app.patch(
+  '/api/records/:id/problem-owner',
+  h(async (req, res) => {
+    const owner = String(req.body?.problem_owner ?? '').trim()
+    if (owner !== '客户' && owner !== '我方') {
+      return res.status(400).json({ error: '问题归属只能是「客户」或「我方」' })
+    }
+    const [rows] = await pool.query('SELECT id, category, day_id FROM scan_record WHERE id = ?', [
+      req.params.id,
+    ])
+    if (rows.length === 0) return res.status(404).json({ error: '记录不存在' })
+    if (rows[0].category !== '未提取到监管码') {
+      return res.status(400).json({ error: '仅「未提取到监管码」可设置问题归属' })
+    }
+    await pool.query('UPDATE scan_record SET problem_owner = ? WHERE id = ?', [owner, req.params.id])
+    const [[rate]] = await pool.query(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '客户' THEN 1 ELSE 0 END) AS customer_miss_count
+       FROM scan_record WHERE day_id = ?`,
+      [rows[0].day_id]
+    )
+    res.json({
+      ok: true,
+      problem_owner: owner,
+      scan_rate: {
+        total: Number(rate.total) || 0,
+        customer_miss_count: Number(rate.customer_miss_count) || 0,
+        ok: Math.max(0, (Number(rate.total) || 0) - (Number(rate.customer_miss_count) || 0)),
+      },
+    })
   })
 )
 
