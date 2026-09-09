@@ -1,0 +1,10 @@
+{
+  "mcp": {
+    "servers": {
+      "vite-dev-mcp": {
+        "type": "http",
+        "url": "http://localhost:5173/__mcp"
+      }
+    }
+  }
+}
