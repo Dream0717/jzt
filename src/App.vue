@@ -30,8 +30,6 @@ const titles = {
   padding: 14px 24px;
 }
 .app-header-inner {
-  max-width: 1200px;
-  margin: 0 auto;
   display: flex;
   align-items: baseline;
   gap: 16px;

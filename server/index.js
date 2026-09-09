@@ -18,6 +18,14 @@ const uploadRemark = multer({
 
 const h = (fn) => (req, res) => fn(req, res).catch((e) => res.status(500).json({ error: e.message }))
 
+/** 读码率 = (总数 − 未提取到监管码且归属我方) ÷ 总数 × 100，保留两位小数 */
+function buildScanRate(totalRaw, ourMissRaw) {
+  const total = Number(totalRaw) || 0
+  const our_miss_count = Number(ourMissRaw) || 0
+  const percent = total > 0 ? Number((((total - our_miss_count) / total) * 100).toFixed(2)) : 0
+  return { total, our_miss_count, percent }
+}
+
 // ---------- 城市 ----------
 app.get(
   '/api/cities',
@@ -67,7 +75,7 @@ app.get(
       `SELECT d.id, d.day_date, d.created_at,
               COUNT(r.id) AS record_count,
               COUNT(DISTINCT r.category) AS category_count,
-              SUM(CASE WHEN r.category = '未提取到监管码' AND r.problem_owner = '客户' THEN 1 ELSE 0 END) AS customer_miss_count
+              SUM(CASE WHEN r.category = '未提取到监管码' AND r.problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count
        FROM acceptance_day d
        LEFT JOIN scan_record r ON r.day_id = d.id
        WHERE d.city_id = ?
@@ -124,17 +132,13 @@ app.get(
     if (rows.length === 0) return res.status(404).json({ error: '日期不存在' })
     const [[rate]] = await pool.query(
       `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '客户' THEN 1 ELSE 0 END) AS customer_miss_count
+              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count
        FROM scan_record WHERE day_id = ?`,
       [req.params.id]
     )
     res.json({
       day: rows[0],
-      scan_rate: {
-        total: Number(rate.total) || 0,
-        customer_miss_count: Number(rate.customer_miss_count) || 0,
-        ok: Math.max(0, (Number(rate.total) || 0) - (Number(rate.customer_miss_count) || 0)),
-      },
+      scan_rate: buildScanRate(rate.total, rate.our_miss_count),
     })
   })
 )
@@ -279,18 +283,14 @@ app.patch(
     await pool.query('UPDATE scan_record SET problem_owner = ? WHERE id = ?', [owner, req.params.id])
     const [[rate]] = await pool.query(
       `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '客户' THEN 1 ELSE 0 END) AS customer_miss_count
+              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count
        FROM scan_record WHERE day_id = ?`,
       [rows[0].day_id]
     )
     res.json({
       ok: true,
       problem_owner: owner,
-      scan_rate: {
-        total: Number(rate.total) || 0,
-        customer_miss_count: Number(rate.customer_miss_count) || 0,
-        ok: Math.max(0, (Number(rate.total) || 0) - (Number(rate.customer_miss_count) || 0)),
-      },
+      scan_rate: buildScanRate(rate.total, rate.our_miss_count),
     })
   })
 )

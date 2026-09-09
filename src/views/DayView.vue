@@ -17,7 +17,7 @@ const props = defineProps({ dayId: String })
 const router = useRouter()
 
 const day = ref(null)
-const scanRate = ref({ total: 0, customer_miss_count: 0, ok: 0 })
+const scanRate = ref({ total: 0, our_miss_count: 0, percent: 0 })
 const stats = ref([])
 const activeCategory = ref('') // '' = 全部
 const keyword = ref('')
@@ -33,16 +33,15 @@ const loadingRecords = ref(false)
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
 const scanRateText = computed(() => {
-  const t = scanRate.value.total || 0
-  if (!t) return ''
-  return `${scanRate.value.ok}/${t}`
+  if (!(scanRate.value.total > 0)) return ''
+  return `${Number(scanRate.value.percent).toFixed(2)}%`
 })
 
 async function refreshBase() {
   try {
     const [d, s] = await Promise.all([getDay(props.dayId), getStats(props.dayId)])
     day.value = d.day
-    scanRate.value = d.scan_rate || { total: 0, customer_miss_count: 0, ok: 0 }
+    scanRate.value = d.scan_rate || { total: 0, our_miss_count: 0, percent: 0 }
     stats.value = s.stats
   } catch (e) {
     alert(e.message)
@@ -296,7 +295,7 @@ onMounted(async () => {
       <button class="btn-ghost" @click="router.push(`/city/${day.city_id}`)">← 返回日期列表</button>
       <span class="day-title">
         {{ day.city_name }} · {{ day.day_date }}
-        <span v-if="scanRate.total" class="scan-rate" title="读码率 = (全部 − 未提取到监管码且归属客户) / 全部">
+        <span v-if="scanRate.total" class="scan-rate" title="读码率 = (总数 − 我方问题) ÷ 总数 × 100%">
           读码率 <em>{{ scanRateText }}</em>
         </span>
       </span>

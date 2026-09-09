@@ -71,8 +71,8 @@ function fmtWeek(dateStr) {
 function scanRateOf(d) {
   const total = Number(d.record_count) || 0
   if (!total) return '—'
-  const miss = Number(d.customer_miss_count) || 0
-  return `${Math.max(0, total - miss)}/${total}`
+  const our = Number(d.our_miss_count) || 0
+  return `${(((total - our) / total) * 100).toFixed(2)}%`
 }
 
 onMounted(refresh)
@@ -101,7 +101,7 @@ onMounted(refresh)
         <div class="day-meta">
           <span v-if="d.record_count > 0">
             {{ d.record_count }} 条 · {{ d.category_count || 0 }} 类
-            <span class="scan-rate" title="读码率 = (全部 − 未提取到监管码且归属客户) / 全部">
+            <span class="scan-rate" title="读码率 = (总数 − 我方问题) ÷ 总数 × 100%">
               读码率 <em>{{ scanRateOf(d) }}</em>
             </span>
           </span>
