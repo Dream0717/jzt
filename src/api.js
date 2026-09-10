@@ -118,6 +118,14 @@ export const listRecords = (dayId, category, keyword, page = 1, pageSize = 50) =
 
 export const getReasonOptions = (dayId) => request(`/api/days/${dayId}/reason-options`)
 
+/** 海康无记录：导入顶扫 log，按流水号回写原因 */
+export const matchDingSaoLog = async (dayId, file) => {
+  await ensureAuth()
+  const form = new FormData()
+  form.append('file', file)
+  return request(`/api/days/${dayId}/ding-sao-log`, { method: 'POST', body: form })
+}
+
 export const updateRecordReason = (id, reason_note) =>
   writeRequest(`/api/records/${id}/reason`, {
     method: 'PATCH',

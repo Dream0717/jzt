@@ -13,6 +13,7 @@ import {
   uploadRemarkImage,
   deleteRemarkImage,
   remarkImageUrl,
+  matchDingSaoLog,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
 
@@ -33,6 +34,8 @@ const jumpPage = ref(1)
 const importing = ref(false)
 const loadingRecords = ref(false)
 const importInputRef = ref(null)
+const dingSaoInputRef = ref(null)
+const matchingDingSao = ref(false)
 
 const previewImage = ref('')
 const previewVisible = ref(false)
@@ -227,9 +230,35 @@ const showIssueColumns = computed(() => {
 })
 
 const showOwnerColumn = computed(() => activeCategory.value === '未提取到监管码')
+const showDingSaoLogBtn = computed(() => activeCategory.value === '海康无记录')
 
 function isIssueRecord(r) {
   return r.category !== '空'
+}
+
+function startDingSaoLog() {
+  dingSaoInputRef.value?.click()
+}
+
+async function onDingSaoLogChange(ev) {
+  const file = ev.target?.files?.[0]
+  ev.target.value = ''
+  if (!file) return
+  matchingDingSao.value = true
+  try {
+    const r = await matchDingSaoLog(props.dayId, file)
+    ElMessage.success(
+      r.message ||
+        `顶扫有记录 ${r.found || 0}，顶扫无记录 ${r.missing || 0}`
+    )
+    await loadReasonOptions()
+    await refreshRecords()
+  } catch (e) {
+    if (isAuthCancelled(e)) return
+    ElMessage.error(e.message)
+  } finally {
+    matchingDingSao.value = false
+  }
 }
 
 const savingReasonId = ref(null)
@@ -482,6 +511,18 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
           @keyup.enter="doSearch"
         />
         <el-button type="primary" @click="doSearch">搜索</el-button>
+        <template v-if="showDingSaoLogBtn">
+          <input
+            ref="dingSaoInputRef"
+            type="file"
+            accept=".log,.txt,.csv,.json,text/plain,*"
+            class="hidden-file"
+            @change="onDingSaoLogChange"
+          />
+          <el-button type="warning" :loading="matchingDingSao" @click="startDingSaoLog">
+            导入顶扫log
+          </el-button>
+        </template>
       </div>
 
       <div

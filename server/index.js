@@ -624,6 +624,77 @@ app.patch(
   })
 )
 
+// ---------- 海康无记录：导入顶扫 log，按流水号回写原因 ----------
+app.post(
+  '/api/days/:id/ding-sao-log',
+  requireLogin,
+  upload.single('file'),
+  h(async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: '请选择 log 文件' })
+    const [days] = await pool.query('SELECT id, source_type FROM acceptance_day WHERE id = ?', [
+      req.params.id,
+    ])
+    if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
+    if (days[0].source_type === 'excel') {
+      return res.status(400).json({ error: '该日期为 Excel 模式' })
+    }
+
+    // 用 latin1 保留原始字节，流水号为 ASCII 数字时可无视中文编码
+    const logText = Buffer.from(req.file.buffer).toString('latin1')
+    if (!logText.trim()) return res.status(400).json({ error: 'log 文件为空' })
+
+    const [rows] = await pool.query(
+      `SELECT id, serial_no FROM scan_record
+       WHERE day_id = ? AND category = '海康无记录'`,
+      [req.params.id]
+    )
+    if (rows.length === 0) {
+      return res.json({
+        total: 0,
+        found: 0,
+        missing: 0,
+        skipped: 0,
+        message: '当前日期没有「海康无记录」数据',
+      })
+    }
+
+    const foundIds = []
+    const missingIds = []
+    let skipped = 0
+    for (const row of rows) {
+      const serial = String(row.serial_no || '').trim()
+      if (!serial) {
+        skipped += 1
+        continue
+      }
+      if (logText.includes(serial)) foundIds.push(row.id)
+      else missingIds.push(row.id)
+    }
+
+    async function batchSetReason(ids, reason) {
+      const BATCH = 500
+      for (let i = 0; i < ids.length; i += BATCH) {
+        const chunk = ids.slice(i, i + BATCH)
+        await pool.query(
+          `UPDATE scan_record SET reason_note = ? WHERE id IN (${chunk.map(() => '?').join(',')})`,
+          [reason, ...chunk]
+        )
+      }
+    }
+
+    await batchSetReason(foundIds, '顶扫有记录')
+    await batchSetReason(missingIds, '顶扫无记录')
+
+    res.json({
+      total: rows.length,
+      found: foundIds.length,
+      missing: missingIds.length,
+      skipped,
+      message: `已处理 ${rows.length} 条：顶扫有记录 ${foundIds.length}，顶扫无记录 ${missingIds.length}`,
+    })
+  })
+)
+
 app.post(
   '/api/records/:id/remark-image',
   requireLogin,
