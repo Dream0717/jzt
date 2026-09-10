@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { isLoggedIn, username, showLoginModal, cancelLogin } from './auth.js'
 import { login, logout } from './api.js'
 
@@ -36,6 +37,7 @@ async function doLogin() {
   loggingIn.value = true
   try {
     await login(u, p)
+    ElMessage.success('登录成功')
   } catch (e) {
     loginError.value = e.message || '登录失败'
   } finally {
@@ -45,6 +47,7 @@ async function doLogin() {
 
 async function doLogout() {
   await logout()
+  ElMessage.success('已退出登录')
 }
 </script>
 
@@ -53,15 +56,15 @@ async function doLogout() {
     <header class="app-header">
       <div class="app-header-inner">
         <div class="header-left">
-          <span class="logo">📦 九州通读码数据验收</span>
-          <span class="crumb">{{ titles[route.name] || '' }}</span>
+          <span class="logo">九州通读码数据验收</span>
+          <el-tag effect="dark" type="info" size="small">{{ titles[route.name] || '' }}</el-tag>
         </div>
         <div class="header-right">
           <template v-if="isLoggedIn">
             <span class="user-name">{{ username }}</span>
-            <button type="button" class="btn-header" @click="doLogout">退出</button>
+            <el-button size="small" @click="doLogout">退出</el-button>
           </template>
-          <button v-else type="button" class="btn-header" @click="showLoginModal = true">登录</button>
+          <el-button v-else size="small" type="primary" @click="showLoginModal = true">登录</el-button>
         </div>
       </div>
     </header>
@@ -69,40 +72,35 @@ async function doLogout() {
       <router-view />
     </main>
 
-    <div v-if="showLoginModal" class="login-mask" @click.self="cancelLogin">
-      <div class="login-card">
-        <h3>账号登录</h3>
-        <p class="login-tip">浏览数据无需登录；添加、删除、导入或修改记录时需要登录</p>
-        <label class="login-field">
-          账号
-          <input
-            v-model="loginUser"
-            class="login-input"
-            autocomplete="username"
-            placeholder="请输入账号"
-            @keyup.enter="doLogin"
-          />
-        </label>
-        <label class="login-field">
-          密码
-          <input
+    <el-dialog
+      v-model="showLoginModal"
+      title="账号登录"
+      width="400px"
+      :close-on-click-modal="false"
+      @close="cancelLogin"
+    >
+      <p class="login-tip">浏览数据无需登录；添加、删除、导入或修改记录时需要登录</p>
+      <el-form label-position="top" @submit.prevent="doLogin">
+        <el-form-item label="账号">
+          <el-input v-model="loginUser" placeholder="请输入账号" autocomplete="username" />
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input
             v-model="loginPass"
             type="password"
-            class="login-input"
-            autocomplete="current-password"
             placeholder="请输入密码"
+            show-password
+            autocomplete="current-password"
             @keyup.enter="doLogin"
           />
-        </label>
-        <p v-if="loginError" class="login-error">{{ loginError }}</p>
-        <div class="login-actions">
-          <button type="button" class="btn-ghost" @click="cancelLogin">取消</button>
-          <button type="button" class="btn-primary" :disabled="loggingIn" @click="doLogin">
-            {{ loggingIn ? '登录中…' : '登录' }}
-          </button>
-        </div>
-      </div>
-    </div>
+        </el-form-item>
+        <el-alert v-if="loginError" :title="loginError" type="error" show-icon :closable="false" />
+      </el-form>
+      <template #footer>
+        <el-button @click="cancelLogin">取消</el-button>
+        <el-button type="primary" :loading="loggingIn" @click="doLogin">登录</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -110,7 +108,7 @@ async function doLogout() {
 .app-header {
   background: #1f3a5f;
   color: #fff;
-  padding: 14px 24px;
+  padding: 12px 24px;
 }
 .app-header-inner {
   display: flex;
@@ -120,8 +118,8 @@ async function doLogout() {
 }
 .header-left {
   display: flex;
-  align-items: baseline;
-  gap: 16px;
+  align-items: center;
+  gap: 12px;
   min-width: 0;
 }
 .header-right {
@@ -134,80 +132,14 @@ async function doLogout() {
   font-size: 18px;
   font-weight: 600;
 }
-.crumb {
-  font-size: 13px;
-  opacity: 0.75;
-}
 .user-name {
   font-size: 13px;
   opacity: 0.9;
 }
-.btn-header {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 6px;
-  padding: 6px 14px;
-  font-size: 13px;
-}
-.btn-header:hover {
-  background: rgba(255, 255, 255, 0.22);
-}
-.login-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
-}
-.login-card {
-  width: 360px;
-  max-width: calc(100vw - 32px);
-  background: #fff;
-  border-radius: 10px;
-  padding: 22px 22px 18px;
-  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.2);
-  color: #2c3e50;
-}
-.login-card h3 {
-  margin: 0 0 8px;
-  font-size: 18px;
-}
 .login-tip {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   font-size: 12px;
-  color: #8a94a6;
+  color: #909399;
   line-height: 1.5;
-}
-.login-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 12px;
-  font-size: 13px;
-  color: #5b6779;
-}
-.login-input {
-  padding: 9px 12px;
-  border: 1px solid #d7dce5;
-  border-radius: 6px;
-  font-size: 14px;
-  outline: none;
-}
-.login-input:focus {
-  border-color: #2f6fed;
-}
-.login-error {
-  margin: 0 0 10px;
-  color: #e5484d;
-  font-size: 13px;
-}
-.login-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 8px;
 }
 </style>

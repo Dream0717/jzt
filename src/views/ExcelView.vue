@@ -1,110 +1,131 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets'
-import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
-import sheetsZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
-import '@univerjs/preset-sheets-core/lib/index.css'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import VueOfficeExcel from '@vue-office/excel'
+import '@vue-office/excel/lib/index.css'
 import { getExcelMeta, fetchExcelBuffer, deleteExcel } from '../api.js'
-import { excelBufferToWorkbookData } from '../utils/excelToUniver.js'
 import { isAuthCancelled } from '../auth.js'
 
 const props = defineProps({ excelId: String })
 const router = useRouter()
 
-const containerRef = ref(null)
 const meta = ref(null)
+const src = ref(null)
 const loading = ref(true)
-const error = ref('')
-let univerInstance = null
-let univerAPI = null
+const saving = ref(false)
+const tip = ref('')
 
 async function init() {
   loading.value = true
-  error.value = ''
+  tip.value = ''
+  src.value = null
   try {
     const data = await getExcelMeta(props.excelId)
     meta.value = data.excel
     document.title = `${meta.value.file_name} - Excel 浏览`
 
-    const buffer = await fetchExcelBuffer(props.excelId)
-    const workbookData = excelBufferToWorkbookData(buffer, meta.value.file_name)
-
-    loading.value = false
-    await nextTick()
-    if (!containerRef.value) throw new Error('容器未就绪')
-
-    destroyUniver()
-    const created = createUniver({
-      locale: LocaleType.ZH_CN,
-      locales: {
-        [LocaleType.ZH_CN]: mergeLocales(sheetsZhCN),
-      },
-      presets: [
-        UniverSheetsCorePreset({
-          container: containerRef.value,
-        }),
-      ],
-    })
-    univerInstance = created.univer
-    univerAPI = created.univerAPI
-    univerAPI.createWorkbook(workbookData)
+    const preview = await fetchExcelBuffer(props.excelId, { preview: true })
+    src.value = preview.buffer
+    if (preview.converted) {
+      tip.value =
+        '当前文件为旧版 .xls，预览已自动转码为 xlsx（中文乱码已处理）。旧格式无法保留嵌入图片；请尽量使用 .xlsx 导入以完整显示图片。'
+    }
   } catch (e) {
-    error.value = e.message || '加载失败'
+    ElMessage.error(e.message || '加载失败')
+  } finally {
     loading.value = false
   }
 }
 
-function destroyUniver() {
+async function saveFile() {
+  if (!meta.value) return
+  saving.value = true
   try {
-    univerAPI?.dispose?.()
-  } catch {
-    // ignore
+    const { buffer } = await fetchExcelBuffer(props.excelId, { download: true })
+    const blob = new Blob([buffer], {
+      type: meta.value.mime_type || 'application/octet-stream',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = meta.value.file_name || 'export.xlsx'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    ElMessage.success('已保存到本地')
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    saving.value = false
   }
-  try {
-    univerInstance?.dispose?.()
-  } catch {
-    // ignore
-  }
-  univerAPI = null
-  univerInstance = null
-  if (containerRef.value) containerRef.value.innerHTML = ''
 }
 
 async function removeFile() {
-  if (!confirm(`确定删除「${meta.value?.file_name}」吗？`)) return
+  try {
+    await ElMessageBox.confirm(`确定删除「${meta.value?.file_name}」吗？`, '删除确认', {
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
   try {
     await deleteExcel(props.excelId)
+    ElMessage.success('已删除')
     router.push(`/city/${meta.value.city_id}`)
   } catch (e) {
     if (isAuthCancelled(e)) return
-    alert(e.message)
+    ElMessage.error(e.message)
   }
 }
 
+function onRendered() {
+  ElMessage.success({ message: 'Excel 渲染完成', duration: 1500 })
+}
+
+function onError() {
+  ElMessage.error('Excel 渲染失败，请尝试另存为 .xlsx 后重新导入')
+}
+
 onMounted(init)
-onBeforeUnmount(destroyUniver)
+onBeforeUnmount(() => {
+  src.value = null
+})
 </script>
 
 <template>
   <div class="excel-page">
     <div class="excel-toolbar">
-      <button class="btn-ghost" @click="router.push(meta ? `/city/${meta.city_id}` : '/')">
-        ← 返回日期文件夹
-      </button>
+      <el-button @click="router.push(meta ? `/city/${meta.city_id}` : '/')">← 返回日期文件夹</el-button>
       <div class="excel-title" v-if="meta">
         <strong>{{ meta.city_name }} · {{ meta.day_date }}</strong>
         <span class="file-name">{{ meta.file_name }}</span>
       </div>
       <div class="excel-actions">
-        <button v-if="meta" class="btn-danger" type="button" @click="removeFile">删除此文件</button>
+        <el-button type="primary" :loading="saving" :disabled="!meta" @click="saveFile">保存到本地</el-button>
+        <el-button type="danger" plain :disabled="!meta" @click="removeFile">删除此文件</el-button>
       </div>
     </div>
 
-    <div class="excel-body">
-      <div v-if="loading" class="excel-status">正在用 Univer 加载 Excel…</div>
-      <div v-else-if="error" class="excel-status error">{{ error }}</div>
-      <div ref="containerRef" class="univer-host"></div>
+    <el-alert
+      v-if="tip"
+      class="excel-tip"
+      :title="tip"
+      type="warning"
+      show-icon
+      :closable="false"
+    />
+
+    <div class="excel-body" v-loading="loading" element-loading-text="正在加载 Excel…">
+      <vue-office-excel
+        v-if="src"
+        :src="src"
+        class="office-excel"
+        @rendered="onRendered"
+        @error="onError"
+      />
+      <el-empty v-else-if="!loading" description="无法加载文件" />
     </div>
   </div>
 </template>
@@ -115,6 +136,7 @@ onBeforeUnmount(destroyUniver)
   flex-direction: column;
   height: calc(100vh - 56px);
   margin: -20px -24px -40px;
+  background: #fff;
 }
 .excel-toolbar {
   display: flex;
@@ -122,8 +144,7 @@ onBeforeUnmount(destroyUniver)
   gap: 12px;
   flex-wrap: wrap;
   padding: 12px 16px;
-  background: #fff;
-  border-bottom: 1px solid #edf0f5;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 .excel-title {
   display: flex;
@@ -137,35 +158,26 @@ onBeforeUnmount(destroyUniver)
 }
 .file-name {
   font-size: 12px;
-  color: #8a94a6;
+  color: #909399;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .excel-actions {
   margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+.excel-tip {
+  margin: 0;
+  border-radius: 0;
 }
 .excel-body {
-  position: relative;
   flex: 1;
   min-height: 0;
+  position: relative;
 }
-.excel-status {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #f4f6fa;
-  color: #8a94a6;
-}
-.excel-status.error {
-  color: #e5484d;
-}
-.univer-host {
-  position: absolute;
-  inset: 0;
+.office-excel {
   width: 100%;
   height: 100%;
 }

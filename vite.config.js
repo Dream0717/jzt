@@ -5,17 +5,10 @@ import { viteMcp } from 'vite-mcp'
 export default defineConfig({
   plugins: [
     vue(),
-    // vite-mcp：在 /__mcp 端点暴露 MCP 服务，提供浏览器控制台/存储/组件树等调试能力
     viteMcp(),
   ],
   optimizeDeps: {
-    include: [
-      'react',
-      'react-dom',
-      'rxjs',
-      '@univerjs/presets',
-      '@univerjs/preset-sheets-core',
-    ],
+    include: ['element-plus', '@vue-office/excel', 'vue-demi'],
   },
   server: {
     port: 5173,

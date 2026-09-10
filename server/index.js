@@ -3,6 +3,7 @@ import multer from 'multer'
 import { pool, initSchema } from './db.js'
 import { parseHikDetail } from './importXls.js'
 import { login, logout, requireLogin } from './auth.js'
+import { toPreviewXlsx } from './excelConvert.js'
 
 const app = express()
 app.use(express.json())
@@ -454,9 +455,33 @@ app.get(
       return res.status(404).json({ error: 'Excel 不存在' })
     }
     const name = encodeURIComponent(rows[0].file_name || 'file.xlsx')
+    const asDownload = String(req.query.download || '') === '1'
     res.set('Content-Type', rows[0].mime_type || 'application/octet-stream')
-    res.set('Content-Disposition', `inline; filename*=UTF-8''${name}`)
+    res.set(
+      'Content-Disposition',
+      `${asDownload ? 'attachment' : 'inline'}; filename*=UTF-8''${name}`
+    )
     res.send(rows[0].file_data)
+  })
+)
+
+/** 预览专用：xlsx 原样（含图片）；xls 转 xlsx 并按 GBK 解码中文 */
+app.get(
+  '/api/excels/:id/preview',
+  h(async (req, res) => {
+    const [rows] = await pool.query(
+      'SELECT file_name, file_data FROM day_excel WHERE id = ?',
+      [req.params.id]
+    )
+    if (rows.length === 0 || !rows[0].file_data) {
+      return res.status(404).json({ error: 'Excel 不存在' })
+    }
+    const preview = toPreviewXlsx(rows[0].file_data, rows[0].file_name)
+    const name = encodeURIComponent(preview.fileName)
+    res.set('Content-Type', preview.mime)
+    res.set('X-Excel-Converted', preview.converted ? '1' : '0')
+    res.set('Content-Disposition', `inline; filename*=UTF-8''${name}`)
+    res.send(preview.buffer)
   })
 )
 

@@ -119,15 +119,22 @@ export const uploadDayExcel = async (dayId, file) => {
 
 export const getExcelMeta = (id) => request(`/api/excels/${id}`)
 
-export async function fetchExcelBuffer(id) {
+export async function fetchExcelBuffer(id, { preview = false, download = false } = {}) {
   const headers = {}
   if (token.value) headers.Authorization = `Bearer ${token.value}`
-  const res = await fetch(`/api/excels/${id}/file`, { headers })
+  let url = `/api/excels/${id}/file`
+  if (preview) url = `/api/excels/${id}/preview`
+  else if (download) url = `/api/excels/${id}/file?download=1`
+  const res = await fetch(url, { headers })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
     throw new Error(data.error || `下载失败 (${res.status})`)
   }
-  return res.arrayBuffer()
+  return {
+    buffer: await res.arrayBuffer(),
+    converted: res.headers.get('X-Excel-Converted') === '1',
+    contentType: res.headers.get('Content-Type') || '',
+  }
 }
 
 export const deleteExcel = (id) => writeRequest(`/api/excels/${id}`, { method: 'DELETE' })

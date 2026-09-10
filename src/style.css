@@ -16,61 +16,11 @@ textarea,
 select,
 .selectable,
 .serial-copy,
-.remark-paste {
+.remark-paste,
+.el-input__inner,
+.el-textarea__inner {
   user-select: text;
   -webkit-user-select: text;
-}
-
-button {
-  font-family: inherit;
-  cursor: pointer;
-  border: none;
-  border-radius: 6px;
-  padding: 8px 16px;
-  font-size: 14px;
-  transition: all 0.15s;
-}
-
-.btn-primary {
-  background: #2f6fed;
-  color: #fff;
-}
-.btn-primary:hover {
-  background: #2558c0;
-}
-
-.btn-danger {
-  background: #fff;
-  color: #e5484d;
-  border: 1px solid #e5484d;
-}
-.btn-danger:hover {
-  background: #e5484d;
-  color: #fff;
-}
-
-.btn-ghost {
-  background: #fff;
-  color: #2c3e50;
-  border: 1px solid #d7dce5;
-}
-.btn-ghost:hover {
-  border-color: #2f6fed;
-  color: #2f6fed;
-}
-
-.card {
-  background: #fff;
-  border-radius: 10px;
-  padding: 20px;
-  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.08);
-}
-
-.empty-tip {
-  text-align: center;
-  color: #8a94a6;
-  padding: 48px 0;
-  font-size: 14px;
 }
 
 .app-main {
@@ -84,12 +34,16 @@ button {
   margin-left: 10px;
   padding: 2px 10px;
   border-radius: 999px;
-  background: #e8f0fe;
-  color: #2f6fed;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
   font-size: 13px;
   font-weight: 600;
 }
 .scan-rate em {
   font-style: normal;
   font-family: Consolas, monospace;
+}
+
+.page-card {
+  margin-bottom: 16px;
 }

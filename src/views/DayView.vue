@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getDay,
   importXls,
@@ -20,7 +21,7 @@ const router = useRouter()
 const day = ref(null)
 const scanRate = ref({ total: 0, our_miss_count: 0, percent: 0 })
 const stats = ref([])
-const activeCategory = ref('') // '' = 全部
+const activeCategory = ref('')
 const keyword = ref('')
 const records = ref([])
 const total = ref(0)
@@ -32,7 +33,6 @@ const importing = ref(false)
 const loadingRecords = ref(false)
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-
 const scanRateText = computed(() => {
   if (!(scanRate.value.total > 0)) return ''
   return `${Number(scanRate.value.percent).toFixed(2)}%`
@@ -45,7 +45,7 @@ async function refreshBase() {
     scanRate.value = d.scan_rate || { total: 0, our_miss_count: 0, percent: 0 }
     stats.value = s.stats
   } catch (e) {
-    alert(e.message)
+    ElMessage.error(e.message)
   }
 }
 
@@ -68,7 +68,7 @@ async function refreshRecords() {
     total.value = data.total
     jumpPage.value = page.value
   } catch (e) {
-    alert(e.message)
+    ElMessage.error(e.message)
   } finally {
     loadingRecords.value = false
   }
@@ -82,13 +82,6 @@ function switchCategory(cat) {
 
 function doSearch() {
   page.value = 1
-  refreshRecords()
-}
-
-function flipPage(delta) {
-  const next = page.value + delta
-  if (next < 1 || next > totalPages.value) return
-  page.value = next
   refreshRecords()
 }
 
@@ -107,39 +100,39 @@ function goJumpPage() {
   refreshRecords()
 }
 
-async function onImport(e) {
-  const file = e.target.files?.[0]
-  if (!file) return
+async function onImport(uploadFile) {
+  const file = uploadFile.raw || uploadFile
+  if (!file) return false
   if (!/\.(xls|xlsx)$/i.test(file.name)) {
-    alert('请选择 .xls 或 .xlsx 文件')
-    e.target.value = ''
-    return
+    ElMessage.warning('请选择 .xls 或 .xlsx 文件')
+    return false
   }
   if (stats.value.length || (scanRate.value.total || 0) > 0) {
-    if (
-      !confirm(
-        '该日期已有数据。重新导入将覆盖（清空）原有全部记录及已填写的原因/备注/问题归属，是否继续？'
+    try {
+      await ElMessageBox.confirm(
+        '该日期已有数据。重新导入将覆盖（清空）原有全部记录及已填写的原因/备注/问题归属，是否继续？',
+        '覆盖确认',
+        { type: 'warning' }
       )
-    ) {
-      e.target.value = ''
-      return
+    } catch {
+      return false
     }
   }
   importing.value = true
   try {
     const r = await importXls(props.dayId, file)
-    alert(`导入成功：共 ${r.total} 条，有效 ${r.imported} 条（已写入数据库）`)
+    ElMessage.success(`导入成功：共 ${r.total} 条，有效 ${r.imported} 条（已写入数据库）`)
     await refreshBase()
     page.value = 1
     activeCategory.value = ''
     await refreshRecords()
   } catch (err) {
-    if (isAuthCancelled(err)) return
-    alert('导入失败：' + err.message)
+    if (isAuthCancelled(err)) return false
+    ElMessage.error('导入失败：' + err.message)
   } finally {
     importing.value = false
-    e.target.value = ''
   }
+  return false
 }
 
 function fmtTime(v) {
@@ -169,6 +162,7 @@ async function copySerial(r) {
   copiedTimer = setTimeout(() => {
     copiedId.value = null
   }, 1200)
+  ElMessage.success({ message: '已复制条码流水号', duration: 1000 })
 }
 
 const totalCount = computed(() => stats.value.reduce((a, s) => a + s.count, 0))
@@ -180,13 +174,6 @@ const showIssueColumns = computed(() => {
 })
 
 const showOwnerColumn = computed(() => activeCategory.value === '未提取到监管码')
-
-const colSpan = computed(() => {
-  let n = 9
-  if (showIssueColumns.value) n += 2
-  if (showOwnerColumn.value) n += 1
-  return n
-})
 
 function isIssueRecord(r) {
   return r.category !== '空'
@@ -201,7 +188,7 @@ async function saveReason(r) {
     r.reason_note = data.reason_note || ''
   } catch (e) {
     if (isAuthCancelled(e)) return
-    alert(e.message)
+    ElMessage.error(e.message)
   } finally {
     savingReasonId.value = null
   }
@@ -217,7 +204,7 @@ async function saveOwner(r) {
     if (data.scan_rate) scanRate.value = data.scan_rate
   } catch (e) {
     if (isAuthCancelled(e)) return
-    alert(e.message)
+    ElMessage.error(e.message)
     await refreshRecords()
   } finally {
     savingOwnerId.value = null
@@ -230,7 +217,7 @@ const pasteFocusId = ref(null)
 async function uploadRemarkFile(r, file) {
   if (!file || !isIssueRecord(r)) return
   if (!file.type.startsWith('image/')) {
-    alert('请粘贴或选择图片文件')
+    ElMessage.warning('请粘贴或选择图片文件')
     return
   }
   uploadingRemarkId.value = r.id
@@ -238,18 +225,13 @@ async function uploadRemarkFile(r, file) {
     await uploadRemarkImage(r.id, file)
     r.has_remark_image = true
     r._remarkVersion = Date.now()
+    ElMessage.success('备注图片已上传')
   } catch (err) {
     if (isAuthCancelled(err)) return
-    alert(err.message)
+    ElMessage.error(err.message)
   } finally {
     uploadingRemarkId.value = null
   }
-}
-
-async function onRemarkImage(e, r) {
-  const file = e.target.files?.[0]
-  e.target.value = ''
-  await uploadRemarkFile(r, file)
 }
 
 async function onRemarkPaste(e, r) {
@@ -266,23 +248,26 @@ async function onRemarkPaste(e, r) {
 }
 
 async function removeRemark(r) {
-  if (!confirm('确定删除该备注图片吗？')) return
+  try {
+    await ElMessageBox.confirm('确定删除该备注图片吗？', '删除确认', { type: 'warning' })
+  } catch {
+    return
+  }
   try {
     await deleteRemarkImage(r.id)
     r.has_remark_image = false
     r._remarkVersion = Date.now()
   } catch (e) {
     if (isAuthCancelled(e)) return
-    alert(e.message)
+    ElMessage.error(e.message)
   }
 }
 
-const previewImage = ref(null)
+const previewImage = ref('')
+const previewVisible = ref(false)
 function openPreview(r) {
   previewImage.value = remarkImageUrl(r.id, r._remarkVersion || r.id)
-}
-function closePreview() {
-  previewImage.value = null
+  previewVisible.value = true
 }
 
 watch(page, (p) => {
@@ -341,7 +326,7 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 <template>
   <div class="page" v-if="day">
     <div class="nav-back">
-      <button class="btn-ghost" @click="router.push(`/city/${day.city_id}`)">← 返回日期列表</button>
+      <el-button @click="router.push(`/city/${day.city_id}`)">← 返回日期列表</el-button>
       <span class="day-title">
         {{ day.city_name }} · {{ day.day_date }}
         <span v-if="scanRate.total" class="scan-rate" title="读码率 = (总数 − 我方问题) ÷ 总数 × 100%">
@@ -350,42 +335,43 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
       </span>
     </div>
 
-    <div class="card import-bar">
-      <label class="btn-primary import-btn" :class="{ disabled: importing }">
-        {{ importing ? '导入中…' : '📥 导入统计明细 (xls/xlsx)' }}
-        <input type="file" accept=".xls,.xlsx" :disabled="importing" @change="onImport" />
-      </label>
-      <span class="import-tip">导入后写入 MySQL；已有数据时会提示是否覆盖。按「补扫原因」自动分类。</span>
-    </div>
-
-    <div class="card stat-card" v-if="stats.length">
-      <div class="cat-tabs">
-        <button
-          class="cat-tab"
-          :class="{ active: activeCategory === '' }"
-          @click="switchCategory('')"
+    <el-card shadow="never" class="page-card">
+      <div class="import-bar">
+        <el-upload
+          :show-file-list="false"
+          accept=".xls,.xlsx"
+          :disabled="importing"
+          :before-upload="(file) => onImport(file)"
         >
-          全部 <em>{{ totalCount }}</em>
-        </button>
-        <button
+          <el-button type="primary" :loading="importing">导入统计明细 (xls/xlsx)</el-button>
+        </el-upload>
+        <span class="import-tip">导入后写入 MySQL；已有数据时会提示是否覆盖。按「补扫原因」自动分类。</span>
+      </div>
+    </el-card>
+
+    <el-card v-if="stats.length" shadow="never" class="page-card" v-loading="loadingRecords">
+      <div class="cat-tabs">
+        <el-check-tag :checked="activeCategory === ''" @click="switchCategory('')">
+          全部 {{ totalCount }}
+        </el-check-tag>
+        <el-check-tag
           v-for="s in stats"
           :key="s.category"
-          class="cat-tab"
-          :class="{ active: activeCategory === s.category }"
+          :checked="activeCategory === s.category"
           @click="switchCategory(s.category)"
         >
-          {{ s.category }} <em>{{ s.count }}</em>
-        </button>
+          {{ s.category }} {{ s.count }}
+        </el-check-tag>
       </div>
 
       <div class="search-bar">
-        <input
+        <el-input
           v-model="keyword"
-          class="search-input"
+          clearable
           placeholder="按 商品名称 / 监管码 / 单据编号 / 操作员 搜索"
           @keyup.enter="doSearch"
         />
-        <button class="btn-primary" @click="doSearch">搜索</button>
+        <el-button type="primary" @click="doSearch">搜索</el-button>
       </div>
 
       <div
@@ -396,6 +382,7 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
       >
         <div class="hscroll-spacer" :style="{ width: tableScrollWidth + 'px' }"></div>
       </div>
+
       <div ref="tableWrap" class="table-wrap" @scroll="onTableScroll">
         <table class="rec-table">
           <thead>
@@ -415,168 +402,137 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
             </tr>
           </thead>
           <tbody>
-            <tr v-if="loadingRecords && records.length === 0">
-              <td :colspan="colSpan" class="td-center">加载中…</td>
-            </tr>
-            <tr v-else-if="records.length === 0">
-              <td :colspan="colSpan" class="td-center">无匹配记录</td>
+            <tr v-if="!loadingRecords && records.length === 0">
+              <td :colspan="9 + (showOwnerColumn ? 1 : 0) + (showIssueColumns ? 2 : 0)" class="td-center">
+                无匹配记录
+              </td>
             </tr>
             <tr v-for="r in records" :key="r.id">
               <td>{{ r.doc_no }}</td>
-              <td class="td-serial">
-                <button
+              <td>
+                <el-button
                   v-if="r.serial_no"
-                  type="button"
                   class="serial-copy"
-                  :class="{ copied: copiedId === r.id }"
-                  :title="copiedId === r.id ? '已复制' : '点击复制条码流水号'"
+                  size="small"
+                  :type="copiedId === r.id ? 'success' : 'default'"
                   @click="copySerial(r)"
                 >
-                  <span class="td-mono">{{ r.serial_no }}</span>
-                  <svg
-                    v-if="copiedId !== r.id"
-                    class="serial-icon"
-                    viewBox="0 0 24 24"
-                    width="14"
-                    height="14"
-                    aria-hidden="true"
-                  >
-                    <rect x="9" y="9" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2" />
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="2" />
-                  </svg>
-                  <svg
-                    v-else
-                    class="serial-icon"
-                    viewBox="0 0 24 24"
-                    width="14"
-                    height="14"
-                    aria-hidden="true"
-                  >
-                    <path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                </button>
-                <span v-else class="td-muted">—</span>
+                  <span class="mono">{{ r.serial_no }}</span>
+                  <el-icon class="copy-icon"><DocumentCopy /></el-icon>
+                </el-button>
+                <span v-else class="muted">—</span>
               </td>
               <td>{{ r.goods_name }}</td>
               <td>{{ r.spec }}</td>
               <td class="td-ellipsis" :title="r.manufacturer">{{ r.manufacturer }}</td>
-              <td class="td-mono">{{ r.drug_code }}</td>
+              <td class="mono">{{ r.drug_code }}</td>
               <td>{{ r.operator }}</td>
-              <td class="td-mono">{{ fmtTime(r.op_time) }}</td>
+              <td class="mono">{{ fmtTime(r.op_time) }}</td>
               <td>
-                <span class="reason-tag" :class="{ 'reason-ok': r.category === '空' }">{{ r.category }}</span>
+                <el-tag :type="r.category === '空' ? 'success' : 'warning'" size="small">
+                  {{ r.category }}
+                </el-tag>
               </td>
-              <td v-if="showOwnerColumn" class="td-owner">
-                <select
+              <td v-if="showOwnerColumn">
+                <el-select
                   v-model="r.problem_owner"
-                  class="owner-select"
+                  size="small"
+                  style="width: 90px"
                   :disabled="savingOwnerId === r.id"
                   @change="saveOwner(r)"
                 >
-                  <option value="我方">我方</option>
-                  <option value="客户">客户</option>
-                </select>
+                  <el-option label="我方" value="我方" />
+                  <el-option label="客户" value="客户" />
+                </el-select>
               </td>
               <td v-if="showIssueColumns" class="td-reason">
-                <template v-if="isIssueRecord(r)">
-                  <input
-                    v-model="r.reason_note"
-                    class="reason-input"
-                    placeholder="填写原因说明"
-                    maxlength="512"
-                    :disabled="savingReasonId === r.id"
-                    @blur="saveReason(r)"
-                  />
-                </template>
-                <span v-else class="td-muted">—</span>
+                <el-input
+                  v-if="isIssueRecord(r)"
+                  v-model="r.reason_note"
+                  size="small"
+                  placeholder="填写原因说明"
+                  maxlength="512"
+                  :disabled="savingReasonId === r.id"
+                  @blur="saveReason(r)"
+                />
+                <span v-else class="muted">—</span>
               </td>
               <td v-if="showIssueColumns" class="td-remark">
-                <template v-if="isIssueRecord(r)">
-                  <div
-                    class="remark-paste"
-                    :class="{
-                      focused: pasteFocusId === r.id,
-                      uploading: uploadingRemarkId === r.id,
-                      hasimg: r.has_remark_image,
-                    }"
-                    tabindex="0"
-                    :title="r.has_remark_image ? '点击后 Ctrl+V 可替换图片' : '点击后 Ctrl+V 粘贴图片'"
-                    @click="pasteFocusId = r.id"
-                    @focus="pasteFocusId = r.id"
-                    @blur="pasteFocusId = null"
-                    @paste="onRemarkPaste($event, r)"
+                <div
+                  v-if="isIssueRecord(r)"
+                  class="remark-paste"
+                  :class="{ focused: pasteFocusId === r.id }"
+                  tabindex="0"
+                  title="点击后 Ctrl+V 粘贴图片"
+                  @click="pasteFocusId = r.id"
+                  @focus="pasteFocusId = r.id"
+                  @blur="pasteFocusId = null"
+                  @paste="onRemarkPaste($event, r)"
+                >
+                  <el-image
+                    v-if="r.has_remark_image"
+                    class="remark-thumb"
+                    :src="remarkImageUrl(r.id, r._remarkVersion || r.id)"
+                    fit="cover"
+                    @click.stop="openPreview(r)"
+                  />
+                  <span v-else class="muted">{{ uploadingRemarkId === r.id ? '上传中…' : '点击后粘贴图片' }}</span>
+                  <el-upload
+                    :show-file-list="false"
+                    accept="image/*"
+                    :disabled="uploadingRemarkId === r.id"
+                    :before-upload="(file) => { uploadRemarkFile(r, file); return false }"
                   >
-                    <img
-                      v-if="r.has_remark_image"
-                      class="remark-thumb"
-                      :src="remarkImageUrl(r.id, r._remarkVersion || r.id)"
-                      alt="备注"
-                      @click.stop="openPreview(r)"
-                    />
-                    <span v-else class="remark-hint">{{ uploadingRemarkId === r.id ? '上传中…' : '点击后粘贴图片' }}</span>
-                    <label class="remark-upload" @click.stop>
+                    <el-button size="small" link type="primary" @click.stop>
                       {{ r.has_remark_image ? '更换' : '选择' }}
-                      <input
-                        type="file"
-                        accept="image/*"
-                        :disabled="uploadingRemarkId === r.id"
-                        @change="onRemarkImage($event, r)"
-                      />
-                    </label>
-                    <button
-                      v-if="r.has_remark_image"
-                      type="button"
-                      class="remark-del"
-                      title="删除备注图片"
-                      @click.stop="removeRemark(r)"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </template>
-                <span v-else class="td-muted">—</span>
+                    </el-button>
+                  </el-upload>
+                  <el-button
+                    v-if="r.has_remark_image"
+                    size="small"
+                    link
+                    type="danger"
+                    @click.stop="removeRemark(r)"
+                  >
+                    删除
+                  </el-button>
+                </div>
+                <span v-else class="muted">—</span>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      <div v-if="previewImage" class="modal-mask" @click.self="closePreview">
-        <div class="preview-box">
-          <button type="button" class="preview-close" @click="closePreview">×</button>
-          <img :src="previewImage" alt="备注大图" class="preview-img" />
-        </div>
-      </div>
-
       <div class="pager">
-        <label class="pager-size">
+        <span>
           每页
-          <select v-model.number="pageSize" @change="changePageSize">
-            <option v-for="n in pageSizeOptions" :key="n" :value="n">{{ n }}</option>
-          </select>
+          <el-select v-model="pageSize" size="small" style="width: 90px" @change="changePageSize">
+            <el-option v-for="n in pageSizeOptions" :key="n" :label="`${n}`" :value="n" />
+          </el-select>
           条
-        </label>
-        <button class="btn-ghost" :disabled="page <= 1" @click="flipPage(-1)">上一页</button>
-        <span class="pager-info">{{ page }} / {{ totalPages }} 页 · 共 {{ total }} 条</span>
-        <button class="btn-ghost" :disabled="page >= totalPages" @click="flipPage(1)">下一页</button>
-        <label class="pager-jump">
+        </span>
+        <el-pagination
+          v-model:current-page="page"
+          :page-size="pageSize"
+          :total="total"
+          layout="total, prev, pager, next"
+          background
+          @current-change="(p) => { page = p; refreshRecords() }"
+        />
+        <span class="pager-jump">
           跳至
-          <input
-            v-model.number="jumpPage"
-            type="number"
-            min="1"
-            :max="totalPages"
-            @keyup.enter="goJumpPage"
-          />
-          页
-          <button class="btn-ghost" type="button" @click="goJumpPage">Go</button>
-        </label>
+          <el-input-number v-model="jumpPage" :min="1" :max="totalPages" size="small" controls-position="right" />
+          <el-button size="small" @click="goJumpPage">Go</el-button>
+        </span>
       </div>
-    </div>
+    </el-card>
 
-    <div v-else class="card empty-tip">
-      该日期还没有数据，点击上方「导入统计明细」上传海康统计明细 xls 文件
-    </div>
+    <el-empty v-else description="该日期还没有数据，点击上方导入统计明细" />
+
+    <el-dialog v-model="previewVisible" title="备注图片" width="640px">
+      <img v-if="previewImage" :src="previewImage" alt="备注大图" class="preview-img" />
+    </el-dialog>
   </div>
 </template>
 
@@ -600,30 +556,11 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-bottom: 16px;
   flex-wrap: wrap;
-}
-.import-btn {
-  display: inline-block;
-  position: relative;
-  overflow: hidden;
-}
-.import-btn.disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-.import-btn input[type='file'] {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  cursor: pointer;
 }
 .import-tip {
   font-size: 13px;
-  color: #8a94a6;
-}
-.stat-card {
-  margin-bottom: 20px;
+  color: #909399;
 }
 .cat-tabs {
   display: flex;
@@ -631,41 +568,10 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   gap: 8px;
   margin-bottom: 14px;
 }
-.cat-tab {
-  background: #f1f4f9;
-  color: #42506b;
-  border-radius: 20px;
-  padding: 6px 14px;
-  font-size: 13px;
-}
-.cat-tab em {
-  font-style: normal;
-  font-weight: 700;
-  margin-left: 4px;
-  color: #2f6fed;
-}
-.cat-tab.active {
-  background: #2f6fed;
-  color: #fff;
-}
-.cat-tab.active em {
-  color: #fff;
-}
 .search-bar {
   display: flex;
   gap: 10px;
   margin-bottom: 12px;
-}
-.search-input {
-  flex: 1;
-  padding: 8px 12px;
-  border: 1px solid #d7dce5;
-  border-radius: 6px;
-  font-size: 13px;
-  outline: none;
-}
-.search-input:focus {
-  border-color: #2f6fed;
 }
 .hscroll-top {
   overflow-x: auto;
@@ -682,7 +588,7 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 }
 .table-wrap {
   overflow-x: auto;
-  border: 1px solid #edf0f5;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   scrollbar-width: none;
 }
@@ -697,14 +603,14 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 }
 .rec-table th,
 .rec-table td {
-  border-bottom: 1px solid #edf0f5;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
   padding: 8px 10px;
   text-align: left;
   white-space: nowrap;
 }
 .rec-table th {
-  background: #f8fafc;
-  color: #5b6779;
+  background: #f5f7fa;
+  color: #606266;
   font-weight: 600;
   position: sticky;
   top: 12px;
@@ -712,121 +618,26 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 }
 .td-center {
   text-align: center;
-  color: #8a94a6;
+  color: #909399;
+  padding: 24px !important;
 }
-.td-mono {
+.mono {
   font-family: Consolas, monospace;
 }
-.td-serial {
-  white-space: nowrap;
-}
-.serial-copy {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  background: #f1f4f9;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.serial-copy:hover {
-  border-color: #2f6fed;
-  background: #e8f0fe;
-  color: #2f6fed;
-}
-.serial-copy.copied {
-  border-color: #1d8a4b;
-  background: #e8f6ee;
-  color: #1d8a4b;
-}
-.serial-icon {
-  flex-shrink: 0;
-  opacity: 0.55;
-}
-.serial-copy:hover .serial-icon,
-.serial-copy.copied .serial-icon {
-  opacity: 1;
-}
-.td-muted {
-  color: #b0b8c7;
+.muted {
+  color: #c0c4cc;
 }
 .td-ellipsis {
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.reason-tag {
-  display: inline-block;
-  background: #fdf0e6;
-  color: #c2560c;
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 12px;
-}
-.reason-tag.reason-ok {
-  background: #e8f6ee;
-  color: #1d8a4b;
-}
-.pager {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 12px;
-}
-.pager-info {
-  font-size: 13px;
-  color: #5b6779;
-}
-.pager-size,
-.pager-jump {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #5b6779;
-}
-.pager-size select,
-.pager-jump input {
-  padding: 4px 8px;
-  border: 1px solid #d7dce5;
-  border-radius: 4px;
-  font-size: 13px;
-}
-.pager-jump input {
-  width: 64px;
-}
-.td-owner {
-  min-width: 90px;
-}
-.owner-select {
-  padding: 5px 8px;
-  border: 1px solid #d7dce5;
-  border-radius: 4px;
-  font-size: 12px;
-  background: #fff;
+.serial-copy .copy-icon {
+  margin-left: 4px;
 }
 .td-reason {
   min-width: 160px;
-  max-width: 220px;
   white-space: normal;
-}
-.reason-input {
-  width: 100%;
-  min-width: 140px;
-  padding: 6px 8px;
-  border: 1px solid #d7dce5;
-  border-radius: 4px;
-  font-size: 12px;
-  outline: none;
-}
-.reason-input:focus {
-  border-color: #2f6fed;
 }
 .td-remark {
   min-width: 180px;
@@ -838,98 +649,39 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   gap: 6px;
   flex-wrap: wrap;
   min-height: 44px;
-  min-width: 160px;
   padding: 6px 8px;
-  border: 1px dashed #c5cedb;
+  border: 1px dashed var(--el-border-color);
   border-radius: 6px;
-  background: #fafbfd;
+  background: #fafafa;
   outline: none;
   cursor: pointer;
 }
 .remark-paste.focused {
-  border-color: #2f6fed;
-  background: #eef3fd;
-  box-shadow: 0 0 0 2px rgba(47, 111, 237, 0.15);
-}
-.remark-paste.uploading {
-  opacity: 0.65;
-}
-.remark-hint {
-  font-size: 12px;
-  color: #8a94a6;
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
 }
 .remark-thumb {
   width: 40px;
   height: 40px;
-  object-fit: cover;
   border-radius: 4px;
-  border: 1px solid #d7dce5;
   cursor: zoom-in;
 }
-.remark-upload {
-  position: relative;
-  display: inline-block;
-  padding: 4px 10px;
-  font-size: 12px;
-  color: #2f6fed;
-  background: #eef3fd;
-  border-radius: 4px;
-  cursor: pointer;
-  overflow: hidden;
-}
-.remark-upload input {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-.remark-del {
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  font-size: 16px;
-  line-height: 1;
-  color: #e5484d;
-  background: #fff;
-  border: 1px solid #e5484d;
-  border-radius: 4px;
-}
-.remark-del:hover {
-  background: #e5484d;
-  color: #fff;
-}
-.modal-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.55);
+.pager {
   display: flex;
   align-items: center;
-  justify-content: center;
-  z-index: 20;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
 }
-.preview-box {
-  position: relative;
-  max-width: 90vw;
-  max-height: 90vh;
-  background: #fff;
-  border-radius: 8px;
-  padding: 12px;
-}
-.preview-close {
-  position: absolute;
-  top: 4px;
-  right: 8px;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  font-size: 24px;
-  color: #5b6779;
-  background: transparent;
-  border: none;
+.pager-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .preview-img {
-  max-width: 85vw;
-  max-height: 80vh;
+  max-width: 100%;
   display: block;
+  margin: 0 auto;
 }
 </style>
