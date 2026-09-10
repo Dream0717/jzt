@@ -31,6 +31,18 @@ const pageSizeOptions = [20, 50, 100, 200]
 const jumpPage = ref(1)
 const importing = ref(false)
 const loadingRecords = ref(false)
+const importInputRef = ref(null)
+
+const previewImage = ref('')
+const previewVisible = ref(false)
+const previewScale = ref(1)
+const previewX = ref(0)
+const previewY = ref(0)
+const previewDragging = ref(false)
+let dragStartX = 0
+let dragStartY = 0
+let dragOriginX = 0
+let dragOriginY = 0
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 const scanRateText = computed(() => {
@@ -42,6 +54,11 @@ async function refreshBase() {
   try {
     const [d, s] = await Promise.all([getDay(props.dayId), getStats(props.dayId)])
     day.value = d.day
+    if (d.day?.source_type === 'excel') {
+      ElMessage.info('该日期为 Excel 模式')
+      router.replace(`/city/${d.day.city_id}`)
+      return
+    }
     scanRate.value = d.scan_rate || { total: 0, our_miss_count: 0, percent: 0 }
     stats.value = s.stats
   } catch (e) {
@@ -100,39 +117,44 @@ function goJumpPage() {
   refreshRecords()
 }
 
-async function onImport(uploadFile) {
-  const file = uploadFile.raw || uploadFile
-  if (!file) return false
-  if (!/\.(xls|xlsx)$/i.test(file.name)) {
-    ElMessage.warning('请选择 .xls 或 .xlsx 文件')
-    return false
-  }
+async function startImport() {
+  if (importing.value) return
   if (stats.value.length || (scanRate.value.total || 0) > 0) {
     try {
       await ElMessageBox.confirm(
-        '该日期已有数据。重新导入将覆盖（清空）原有全部记录及已填写的原因/备注/问题归属，是否继续？',
+        '该日期已有数据，继续导入将覆盖原有全部记录及已填写的原因/备注/问题归属，是否继续？',
         '覆盖确认',
-        { type: 'warning' }
+        { type: 'warning', confirmButtonText: '继续导入', cancelButtonText: '取消' }
       )
     } catch {
-      return false
+      return
     }
+  }
+  importInputRef.value?.click()
+}
+
+async function onImportFileChange(ev) {
+  const file = ev.target?.files?.[0]
+  ev.target.value = ''
+  if (!file) return
+  if (!/\.(xls|xlsx)$/i.test(file.name)) {
+    ElMessage.warning('请选择 .xls 或 .xlsx 文件')
+    return
   }
   importing.value = true
   try {
     const r = await importXls(props.dayId, file)
-    ElMessage.success(`导入成功：共 ${r.total} 条，有效 ${r.imported} 条（已写入数据库）`)
+    ElMessage.success(`导入成功：共 ${r.total} 条，有效 ${r.imported} 条`)
     await refreshBase()
     page.value = 1
     activeCategory.value = ''
     await refreshRecords()
   } catch (err) {
-    if (isAuthCancelled(err)) return false
+    if (isAuthCancelled(err)) return
     ElMessage.error('导入失败：' + err.message)
   } finally {
     importing.value = false
   }
-  return false
 }
 
 function fmtTime(v) {
@@ -263,11 +285,44 @@ async function removeRemark(r) {
   }
 }
 
-const previewImage = ref('')
-const previewVisible = ref(false)
 function openPreview(r) {
   previewImage.value = remarkImageUrl(r.id, r._remarkVersion || r.id)
+  previewScale.value = 1
+  previewX.value = 0
+  previewY.value = 0
   previewVisible.value = true
+}
+
+function onPreviewWheel(e) {
+  e.preventDefault()
+  const delta = e.deltaY > 0 ? -0.12 : 0.12
+  const next = Math.min(5, Math.max(0.3, previewScale.value + delta))
+  previewScale.value = Number(next.toFixed(2))
+}
+
+function onPreviewMouseDown(e) {
+  if (e.button !== 0) return
+  previewDragging.value = true
+  dragStartX = e.clientX
+  dragStartY = e.clientY
+  dragOriginX = previewX.value
+  dragOriginY = previewY.value
+}
+
+function onPreviewMouseMove(e) {
+  if (!previewDragging.value) return
+  previewX.value = dragOriginX + (e.clientX - dragStartX)
+  previewY.value = dragOriginY + (e.clientY - dragStartY)
+}
+
+function onPreviewMouseUp() {
+  previewDragging.value = false
+}
+
+function resetPreviewTransform() {
+  previewScale.value = 1
+  previewX.value = 0
+  previewY.value = 0
 }
 
 watch(page, (p) => {
@@ -337,15 +392,16 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 
     <el-card shadow="never" class="page-card">
       <div class="import-bar">
-        <el-upload
-          :show-file-list="false"
+        <input
+          ref="importInputRef"
+          type="file"
           accept=".xls,.xlsx"
-          :disabled="importing"
-          :before-upload="(file) => onImport(file)"
-        >
-          <el-button type="primary" :loading="importing">导入统计明细 (xls/xlsx)</el-button>
-        </el-upload>
-        <span class="import-tip">导入后写入 MySQL；已有数据时会提示是否覆盖。按「补扫原因」自动分类。</span>
+          class="hidden-file"
+          @change="onImportFileChange"
+        />
+        <el-button type="primary" :loading="importing" @click="startImport">
+          导入统计明细 (xls/xlsx)
+        </el-button>
       </div>
     </el-card>
 
@@ -530,8 +586,40 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 
     <el-empty v-else description="该日期还没有数据，点击上方导入统计明细" />
 
-    <el-dialog v-model="previewVisible" title="备注图片" width="640px">
-      <img v-if="previewImage" :src="previewImage" alt="备注大图" class="preview-img" />
+    <el-dialog
+      v-model="previewVisible"
+      title="备注图片"
+      width="90%"
+      top="4vh"
+      class="remark-preview-dialog"
+      destroy-on-close
+      @closed="resetPreviewTransform"
+    >
+      <div class="preview-toolbar">
+        <span>滚轮缩放 · 拖拽移动</span>
+        <el-button size="small" @click="resetPreviewTransform">复位</el-button>
+      </div>
+      <div
+        class="preview-viewport"
+        :class="{ 'is-dragging': previewDragging }"
+        @wheel.prevent="onPreviewWheel"
+        @mousedown="onPreviewMouseDown"
+        @mousemove="onPreviewMouseMove"
+        @mouseup="onPreviewMouseUp"
+        @mouseleave="onPreviewMouseUp"
+      >
+        <img
+          v-if="previewImage"
+          :src="previewImage"
+          alt="备注大图"
+          class="preview-img"
+          :style="{
+            transform: `translate(${previewX}px, ${previewY}px) scale(${previewScale})`,
+          }"
+          draggable="false"
+          @dragstart.prevent
+        />
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -558,9 +646,8 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   gap: 14px;
   flex-wrap: wrap;
 }
-.import-tip {
-  font-size: 13px;
-  color: #909399;
+.hidden-file {
+  display: none;
 }
 .cat-tabs {
   display: flex;
@@ -679,9 +766,35 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   align-items: center;
   gap: 6px;
 }
+.preview-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  color: #909399;
+  font-size: 13px;
+}
+.preview-viewport {
+  height: min(78vh, 820px);
+  overflow: hidden;
+  background: #1a1a1a;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  touch-action: none;
+  cursor: grab;
+}
+.preview-viewport.is-dragging {
+  cursor: grabbing;
+}
 .preview-img {
-  max-width: 100%;
-  display: block;
-  margin: 0 auto;
+  max-width: min(96%, 1400px);
+  max-height: 92%;
+  object-fit: contain;
+  transform-origin: center center;
+  transition: transform 0.05s linear;
+  pointer-events: none;
 }
 </style>

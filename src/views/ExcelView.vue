@@ -80,7 +80,7 @@ async function init() {
     meta.value = data.excel
     document.title = `${meta.value.file_name} - Excel 编辑`
 
-    // 优先用预览缓冲（xls 已转码）；xlsx 原样含图
+    // xls 走预览转码；xlsx 原样含图
     const preview = await fetchExcelBuffer(props.excelId, { preview: true })
     originalBuffer = preview.buffer
 
@@ -169,7 +169,7 @@ async function saveChanges() {
     meta.value.file_name = result.file_name
     meta.value.file_size = result.file_size
     originalBuffer = arr
-    ElMessage.success('修改已保存到数据库')
+    ElMessage.success('修改已保存')
   } catch (e) {
     if (isAuthCancelled(e)) return
     ElMessage.error(e.message || '保存失败')

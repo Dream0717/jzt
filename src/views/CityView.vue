@@ -2,7 +2,16 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listDays, createDay, deleteDay, listDayExcels, uploadDayExcel, deleteExcel } from '../api.js'
+import {
+  listDays,
+  createDay,
+  updateDay,
+  deleteDay,
+  listDayExcels,
+  uploadDayExcel,
+  deleteExcel,
+  importXls,
+} from '../api.js'
 import { isAuthCancelled } from '../auth.js'
 
 const props = defineProps({ cityId: String })
@@ -12,12 +21,19 @@ const days = ref([])
 const loading = ref(false)
 const showAdd = ref(false)
 const newDate = ref('')
+const newSourceType = ref('detail')
+const creating = ref(false)
 const importingDayId = ref(null)
 
 const showExcelPanel = ref(false)
 const excelDay = ref(null)
 const excelFiles = ref([])
 const loadingExcels = ref(false)
+
+const pendingImportDay = ref(null)
+const detailInputRef = ref(null)
+const excelInputRef = ref(null)
+const rateDrafts = ref({})
 
 function todayStr() {
   const d = new Date()
@@ -26,12 +42,24 @@ function todayStr() {
   return `${d.getFullYear()}-${m}-${day}`
 }
 
+function dayMode(d) {
+  if (d.source_type === 'detail' || d.source_type === 'excel') return d.source_type
+  if ((d.record_count || 0) > 0) return 'detail'
+  if ((d.excel_count || 0) > 0) return 'excel'
+  return null
+}
+
 async function refresh() {
   loading.value = true
   try {
     const data = await listDays(props.cityId)
     cityName.value = data.city?.name || ''
     days.value = data.days
+    const drafts = { ...rateDrafts.value }
+    for (const d of data.days) {
+      if (drafts[d.id] === undefined) drafts[d.id] = d.manual_scan_rate || ''
+    }
+    rateDrafts.value = drafts
     document.title = `${cityName.value} - 日期文件夹`
   } catch (e) {
     ElMessage.error(e.message)
@@ -42,28 +70,49 @@ async function refresh() {
 
 function openAdd() {
   newDate.value = todayStr()
+  newSourceType.value = 'detail'
   showAdd.value = true
 }
 
 async function confirmAdd() {
-  if (!newDate.value) return
+  if (!newDate.value) {
+    ElMessage.warning('请选择日期')
+    return
+  }
+  if (newSourceType.value !== 'detail' && newSourceType.value !== 'excel') {
+    ElMessage.warning('请选择导入类型')
+    return
+  }
+  creating.value = true
   try {
-    await createDay(props.cityId, newDate.value)
+    const created = await createDay(props.cityId, newDate.value, newSourceType.value)
     showAdd.value = false
-    ElMessage.success('已创建日期文件夹')
+    ElMessage.success('已创建日期文件夹，请选择要导入的文件')
     await refresh()
+    pendingImportDay.value = {
+      id: created.id,
+      day_date: created.day_date,
+      source_type: created.source_type,
+      excel_count: 0,
+      record_count: 0,
+    }
+    if (created.source_type === 'detail') {
+      detailInputRef.value?.click()
+    } else {
+      excelInputRef.value?.click()
+    }
   } catch (e) {
     if (isAuthCancelled(e)) return
     ElMessage.error(e.message)
+  } finally {
+    creating.value = false
   }
 }
 
 async function removeDay(day) {
-  const recCount = day.record_count || 0
-  const excelCount = day.excel_count || 0
   const tipParts = []
-  if (recCount) tipParts.push(`${recCount} 条验收数据`)
-  if (excelCount) tipParts.push(`${excelCount} 个 Excel 文件`)
+  if ((day.record_count || 0) > 0) tipParts.push(`${day.record_count} 条验收数据`)
+  if ((day.excel_count || 0) > 0) tipParts.push(`${day.excel_count} 个 Excel 文件`)
   const tip = tipParts.length
     ? `该日期下有 ${tipParts.join('、')}，删除后不可恢复！`
     : '删除后不可恢复！'
@@ -97,31 +146,87 @@ function scanRateOf(d) {
   return `${(((total - our) / total) * 100).toFixed(2)}%`
 }
 
-async function onImportExcel(opt, day) {
-  const file = opt?.file
-  if (!file) return
-  if (!/\.(xls|xlsx)$/i.test(file.name)) {
-    ElMessage.warning('请选择 .xls 或 .xlsx 文件')
-    return
+async function saveManualRate(day) {
+  const value = String(rateDrafts.value[day.id] ?? '').trim()
+  try {
+    await updateDay(day.id, { manual_scan_rate: value })
+    day.manual_scan_rate = value || null
+    ElMessage.success('读码率已保存')
+  } catch (e) {
+    if (isAuthCancelled(e)) return
+    ElMessage.error(e.message)
   }
+}
 
-  let overwrite = false
-  if ((day.excel_count || 0) > 0) {
+async function startImportDetail(day) {
+  if ((day.record_count || 0) > 0) {
     try {
       await ElMessageBox.confirm(
-        `该日期已有 ${day.excel_count} 个 Excel 文件。重新导入将覆盖（删除旧文件后写入新文件），是否继续？`,
+        '该日期已有验收数据，继续导入将覆盖原有全部记录及已填写内容，是否继续？',
         '覆盖确认',
-        { type: 'warning', confirmButtonText: '覆盖导入', cancelButtonText: '取消' }
+        { type: 'warning', confirmButtonText: '继续导入', cancelButtonText: '取消' }
       )
-      overwrite = true
     } catch {
       return
     }
   }
+  pendingImportDay.value = day
+  detailInputRef.value?.click()
+}
 
+async function startImportExcel(day) {
+  if ((day.excel_count || 0) > 0) {
+    try {
+      await ElMessageBox.confirm(
+        `该日期已有 Excel 文件，继续导入将覆盖旧文件，是否继续？`,
+        '覆盖确认',
+        { type: 'warning', confirmButtonText: '继续导入', cancelButtonText: '取消' }
+      )
+    } catch {
+      return
+    }
+  }
+  pendingImportDay.value = day
+  excelInputRef.value?.click()
+}
+
+async function onDetailFileChange(ev) {
+  const file = ev.target?.files?.[0]
+  ev.target.value = ''
+  const day = pendingImportDay.value
+  pendingImportDay.value = null
+  if (!file || !day) return
+  if (!/\.(xls|xlsx)$/i.test(file.name)) {
+    ElMessage.warning('请选择 .xls 或 .xlsx 文件')
+    return
+  }
   importingDayId.value = day.id
   try {
-    const r = await uploadDayExcel(day.id, file, { overwrite })
+    const r = await importXls(day.id, file)
+    ElMessage.success(`导入成功：共 ${r.total} 条，有效 ${r.imported} 条`)
+    await refresh()
+    router.push(`/day/${day.id}`)
+  } catch (err) {
+    if (isAuthCancelled(err)) return
+    ElMessage.error(err.message)
+  } finally {
+    importingDayId.value = null
+  }
+}
+
+async function onExcelFileChange(ev) {
+  const file = ev.target?.files?.[0]
+  ev.target.value = ''
+  const day = pendingImportDay.value
+  pendingImportDay.value = null
+  if (!file || !day) return
+  if (!/\.(xls|xlsx)$/i.test(file.name)) {
+    ElMessage.warning('请选择 .xls 或 .xlsx 文件')
+    return
+  }
+  importingDayId.value = day.id
+  try {
+    const r = await uploadDayExcel(day.id, file, { overwrite: true })
     await refresh()
     try {
       await ElMessageBox.confirm(`已导入「${r.file_name}」，是否立即打开编辑？`, '导入成功', {
@@ -186,11 +291,35 @@ function fmtSize(n) {
   return `${(size / 1024 / 1024).toFixed(2)} MB`
 }
 
+function openDay(d) {
+  if (dayMode(d) === 'excel') {
+    if ((d.excel_count || 0) > 0) openExcelPanel(d)
+    else startImportExcel(d)
+    return
+  }
+  router.push(`/day/${d.id}`)
+}
+
 onMounted(refresh)
 </script>
 
 <template>
   <div class="page" v-loading="loading">
+    <input
+      ref="detailInputRef"
+      type="file"
+      accept=".xls,.xlsx"
+      class="hidden-file"
+      @change="onDetailFileChange"
+    />
+    <input
+      ref="excelInputRef"
+      type="file"
+      accept=".xls,.xlsx"
+      class="hidden-file"
+      @change="onExcelFileChange"
+    />
+
     <div class="nav-back">
       <el-button @click="router.push('/')">← 返回城市列表</el-button>
       <span class="city-title">{{ cityName }}</span>
@@ -207,40 +336,82 @@ onMounted(refresh)
     <el-row v-else :gutter="16">
       <el-col v-for="d in days" :key="d.id" :xs="24" :sm="12" :md="8" :lg="6">
         <el-card shadow="hover" class="day-card">
-          <div class="day-date" @click="router.push(`/day/${d.id}`)">{{ d.day_date }}</div>
+          <div class="day-date" @click="openDay(d)">{{ d.day_date }}</div>
           <div class="day-week">{{ fmtWeek(d.day_date) }}</div>
-          <div class="day-meta">
+
+          <div class="day-meta" v-if="dayMode(d) === 'detail'">
+            <el-tag size="small" type="primary">验收明细</el-tag>
             <template v-if="d.record_count > 0">
               <div>{{ d.record_count }} 条 · {{ d.category_count || 0 }} 类</div>
               <span class="scan-rate">读码率 <em>{{ scanRateOf(d) }}</em></span>
             </template>
-            <div v-else class="muted">验收数据未导入</div>
-            <el-tag v-if="d.excel_count > 0" type="success" size="small">Excel {{ d.excel_count }} 个</el-tag>
+            <div v-else class="muted">尚未导入验收明细</div>
           </div>
+
+          <div class="day-meta" v-else-if="dayMode(d) === 'excel'">
+            <el-tag size="small" type="success">Excel</el-tag>
+            <div v-if="d.excel_count > 0">已导入 Excel</div>
+            <div v-else class="muted">尚未导入 Excel</div>
+            <div class="manual-rate">
+              <span>读码率</span>
+              <el-input
+                v-model="rateDrafts[d.id]"
+                size="small"
+                placeholder="如 98.50%"
+                @change="saveManualRate(d)"
+              />
+            </div>
+          </div>
+
+          <div class="day-meta" v-else>
+            <div class="muted">未指定类型</div>
+          </div>
+
           <div class="day-actions">
-            <el-button size="small" @click="router.push(`/day/${d.id}`)">验收明细</el-button>
-            <el-upload
-              :show-file-list="false"
-              accept=".xls,.xlsx"
-              :disabled="importingDayId === d.id"
-              :http-request="(opt) => onImportExcel(opt, d)"
-            >
-              <el-button size="small" type="primary" :loading="importingDayId === d.id">
+            <template v-if="dayMode(d) === 'detail'">
+              <el-button size="small" @click="router.push(`/day/${d.id}`)">验收明细</el-button>
+              <el-button
+                size="small"
+                type="primary"
+                :loading="importingDayId === d.id"
+                @click="startImportDetail(d)"
+              >
+                导入明细
+              </el-button>
+            </template>
+            <template v-else-if="dayMode(d) === 'excel'">
+              <el-button
+                size="small"
+                type="primary"
+                :loading="importingDayId === d.id"
+                @click="startImportExcel(d)"
+              >
                 导入Excel
               </el-button>
-            </el-upload>
-            <el-button v-if="d.excel_count > 0" size="small" @click="openExcelPanel(d)">打开Excel</el-button>
+              <el-button v-if="d.excel_count > 0" size="small" @click="openExcelPanel(d)">
+                打开Excel
+              </el-button>
+            </template>
             <el-button size="small" type="danger" plain @click="removeDay(d)">删除</el-button>
           </div>
         </el-card>
       </el-col>
     </el-row>
 
-    <el-dialog v-model="showAdd" title="添加日期文件夹" width="400px">
-      <el-date-picker v-model="newDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+    <el-dialog v-model="showAdd" title="添加日期文件夹" width="440px">
+      <div class="add-form">
+        <div class="add-label">日期</div>
+        <el-date-picker v-model="newDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+        <div class="add-label">导入类型（二选一）</div>
+        <el-radio-group v-model="newSourceType" class="source-radios">
+          <el-radio value="detail" border>导入验收明细</el-radio>
+          <el-radio value="excel" border>导入 Excel</el-radio>
+        </el-radio-group>
+        <p class="add-tip">创建后将立即选择文件导入；同一日期仅保留一种类型。</p>
+      </div>
       <template #footer>
         <el-button @click="showAdd = false">取消</el-button>
-        <el-button type="primary" @click="confirmAdd">创建</el-button>
+        <el-button type="primary" :loading="creating" @click="confirmAdd">创建并导入</el-button>
       </template>
     </el-dialog>
 
@@ -265,6 +436,9 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+.hidden-file {
+  display: none;
+}
 .nav-back {
   display: flex;
   align-items: center;
@@ -291,25 +465,35 @@ onMounted(refresh)
 .day-date {
   font-size: 20px;
   font-weight: 700;
-  color: #1f3a5f;
   cursor: pointer;
+  color: var(--el-color-primary);
 }
 .day-week {
-  font-size: 13px;
   color: #909399;
-  margin-top: 2px;
+  font-size: 13px;
+  margin: 4px 0 10px;
 }
 .day-meta {
-  margin: 12px 0;
+  min-height: 72px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  color: var(--el-color-primary);
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 12px;
 }
-.day-meta .scan-rate {
-  margin-left: 0;
+.scan-rate em {
+  font-style: normal;
+  color: var(--el-color-success);
+  font-weight: 700;
+}
+.manual-rate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 220px;
 }
 .muted {
   color: #c0c4cc;
@@ -319,5 +503,26 @@ onMounted(refresh)
   flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
+}
+.add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.add-label {
+  font-size: 13px;
+  color: #606266;
+  font-weight: 600;
+}
+.source-radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.add-tip {
+  margin: 0;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.5;
 }
 </style>

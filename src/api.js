@@ -61,10 +61,15 @@ export const deleteCity = (id) => writeRequest(`/api/cities/${id}`, { method: 'D
 
 // 日期文件夹
 export const listDays = (cityId) => request(`/api/cities/${cityId}/days`)
-export const createDay = (cityId, date) =>
+export const createDay = (cityId, date, sourceType) =>
   writeRequest(`/api/cities/${cityId}/days`, {
     method: 'POST',
-    body: JSON.stringify({ date }),
+    body: JSON.stringify({ date, source_type: sourceType }),
+  })
+export const updateDay = (dayId, patch) =>
+  writeRequest(`/api/days/${dayId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
   })
 export const deleteDay = (dayId) => writeRequest(`/api/days/${dayId}`, { method: 'DELETE' })
 

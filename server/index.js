@@ -88,7 +88,7 @@ app.delete(
   h(async (req, res) => {
     const [r] = await pool.query('DELETE FROM city WHERE id = ?', [req.params.id])
     if (r.affectedRows === 0) return res.status(404).json({ error: '城市不存在' })
-    res.json({ ok: true }) // 级联删除其日期与记录
+    res.json({ ok: true })
   })
 )
 
@@ -99,7 +99,7 @@ app.get(
     const [cities] = await pool.query('SELECT id, name FROM city WHERE id = ?', [req.params.cityId])
     if (cities.length === 0) return res.status(404).json({ error: '城市不存在' })
     const [days] = await pool.query(
-      `SELECT d.id, d.day_date, d.created_at,
+      `SELECT d.id, d.day_date, d.source_type, d.manual_scan_rate, d.created_at,
               COUNT(r.id) AS record_count,
               COUNT(DISTINCT r.category) AS category_count,
               SUM(CASE WHEN r.category = '未提取到监管码' AND r.problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count,
@@ -107,7 +107,7 @@ app.get(
        FROM acceptance_day d
        LEFT JOIN scan_record r ON r.day_id = d.id
        WHERE d.city_id = ?
-       GROUP BY d.id, d.day_date, d.created_at
+       GROUP BY d.id, d.day_date, d.source_type, d.manual_scan_rate, d.created_at
        ORDER BY d.day_date DESC, d.id DESC`,
       [req.params.cityId]
     )
@@ -123,20 +123,44 @@ app.post(
     if (!date) {
       const d = new Date()
       const p = (n) => String(n).padStart(2, '0')
-      date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` // 默认当天
+      date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: '日期格式应为 YYYY-MM-DD' })
+    const sourceType = String(req.body?.source_type || '').trim()
+    if (sourceType !== 'detail' && sourceType !== 'excel') {
+      return res.status(400).json({ error: '请选择导入类型：验收明细或 Excel' })
+    }
     try {
       const [r] = await pool.query(
-        'INSERT INTO acceptance_day (city_id, day_date) VALUES (?, ?)',
-        [req.params.cityId, date]
+        'INSERT INTO acceptance_day (city_id, day_date, source_type) VALUES (?, ?, ?)',
+        [req.params.cityId, date, sourceType]
       )
-      res.json({ id: r.insertId, day_date: date })
+      res.json({ id: r.insertId, day_date: date, source_type: sourceType })
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: `日期「${date}」已存在` })
       if (e.code === 'ER_NO_REFERENCED_ROW_2') return res.status(404).json({ error: '城市不存在' })
       throw e
     }
+  })
+)
+
+app.patch(
+  '/api/days/:id',
+  requireLogin,
+  h(async (req, res) => {
+    const [rows] = await pool.query('SELECT id, source_type FROM acceptance_day WHERE id = ?', [
+      req.params.id,
+    ])
+    if (rows.length === 0) return res.status(404).json({ error: '日期不存在' })
+    if (req.body?.manual_scan_rate !== undefined) {
+      const rate = String(req.body.manual_scan_rate ?? '').trim().slice(0, 32)
+      await pool.query('UPDATE acceptance_day SET manual_scan_rate = ? WHERE id = ?', [
+        rate || null,
+        req.params.id,
+      ])
+      return res.json({ ok: true, manual_scan_rate: rate || null })
+    }
+    return res.status(400).json({ error: '没有可更新的字段' })
   })
 )
 
@@ -154,7 +178,7 @@ app.get(
   '/api/days/:id',
   h(async (req, res) => {
     const [rows] = await pool.query(
-      `SELECT d.id, d.city_id, d.day_date, c.name AS city_name
+      `SELECT d.id, d.city_id, d.day_date, d.source_type, d.manual_scan_rate, c.name AS city_name
        FROM acceptance_day d JOIN city c ON c.id = d.city_id
        WHERE d.id = ?`,
       [req.params.id]
@@ -180,16 +204,25 @@ app.post(
   upload.single('file'),
   h(async (req, res) => {
     if (!req.file) return res.status(400).json({ error: '请选择文件' })
-    const [days] = await pool.query('SELECT id FROM acceptance_day WHERE id = ?', [req.params.id])
+    const [days] = await pool.query('SELECT id, source_type FROM acceptance_day WHERE id = ?', [
+      req.params.id,
+    ])
     if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
+    if (days[0].source_type === 'excel') {
+      return res.status(400).json({ error: '该日期为 Excel 模式，请导入 Excel 文件' })
+    }
 
     const records = parseHikDetail(req.file.buffer)
 
     const conn = await pool.getConnection()
     try {
       await conn.beginTransaction()
-      // 重新导入 = 先清空当天旧数据
       await conn.query('DELETE FROM scan_record WHERE day_id = ?', [req.params.id])
+      if (!days[0].source_type) {
+        await conn.query(`UPDATE acceptance_day SET source_type = 'detail' WHERE id = ?`, [
+          req.params.id,
+        ])
+      }
 
       const COLS = 15
       const sql = `INSERT INTO scan_record
@@ -412,8 +445,13 @@ app.post(
     if (!/\.(xls|xlsx)$/i.test(fileName)) {
       return res.status(400).json({ error: '仅支持 .xls / .xlsx' })
     }
-    const [days] = await pool.query('SELECT id FROM acceptance_day WHERE id = ?', [req.params.id])
+    const [days] = await pool.query('SELECT id, source_type FROM acceptance_day WHERE id = ?', [
+      req.params.id,
+    ])
     if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
+    if (days[0].source_type === 'detail') {
+      return res.status(400).json({ error: '该日期为验收明细模式，请导入统计明细' })
+    }
 
     const overwrite = String(req.body?.overwrite || '') === '1'
     const conn = await pool.getConnection()
@@ -421,6 +459,11 @@ app.post(
       await conn.beginTransaction()
       if (overwrite) {
         await conn.query('DELETE FROM day_excel WHERE day_id = ?', [req.params.id])
+      }
+      if (!days[0].source_type) {
+        await conn.query(`UPDATE acceptance_day SET source_type = 'excel' WHERE id = ?`, [
+          req.params.id,
+        ])
       }
       const [r] = await conn.query(
         `INSERT INTO day_excel (day_id, file_name, mime_type, file_size, file_data)

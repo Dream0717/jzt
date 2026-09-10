@@ -24,6 +24,8 @@ const SCHEMA_SQL = [
     id INT AUTO_INCREMENT PRIMARY KEY,
     city_id INT NOT NULL,
     day_date DATE NOT NULL,
+    source_type VARCHAR(16) DEFAULT NULL,
+    manual_scan_rate VARCHAR(32) DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_city_date (city_id, day_date),
     CONSTRAINT fk_day_city FOREIGN KEY (city_id) REFERENCES city(id) ON DELETE CASCADE
@@ -79,6 +81,16 @@ const MIGRATE_SQL = [
   `ALTER TABLE scan_record ADD COLUMN remark_image_mime VARCHAR(64) DEFAULT NULL`,
   `ALTER TABLE scan_record ADD COLUMN problem_owner VARCHAR(16) DEFAULT NULL`,
   `UPDATE scan_record SET problem_owner = '我方' WHERE category = '未提取到监管码' AND (problem_owner IS NULL OR problem_owner = '')`,
+  `ALTER TABLE acceptance_day ADD COLUMN source_type VARCHAR(16) DEFAULT NULL`,
+  `ALTER TABLE acceptance_day ADD COLUMN manual_scan_rate VARCHAR(32) DEFAULT NULL`,
+  `UPDATE acceptance_day d
+     SET source_type = 'detail'
+     WHERE (source_type IS NULL OR source_type = '')
+       AND EXISTS (SELECT 1 FROM scan_record r WHERE r.day_id = d.id)`,
+  `UPDATE acceptance_day d
+     SET source_type = 'excel'
+     WHERE (source_type IS NULL OR source_type = '')
+       AND EXISTS (SELECT 1 FROM day_excel e WHERE e.day_id = d.id)`,
 ]
 
 export async function initSchema() {
