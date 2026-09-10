@@ -289,23 +289,45 @@ app.post(
   })
 )
 
-// ---------- 城市级：按操作时间拆分导入多日验收明细 ----------
+// ---------- 城市级：按操作时间拆分导入多日验收明细（支持多文件） ----------
 app.post(
   '/api/cities/:cityId/import-split',
   requireLogin,
-  upload.single('file'),
+  upload.array('files', 30),
   h(async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: '请选择文件' })
+    const files = Array.isArray(req.files) ? req.files : []
+    if (files.length === 0) return res.status(400).json({ error: '请选择至少一个文件' })
     const [cities] = await pool.query('SELECT id, name FROM city WHERE id = ?', [req.params.cityId])
     if (cities.length === 0) return res.status(404).json({ error: '城市不存在' })
 
-    const records = parseHikDetail(req.file.buffer)
-    const { groups, skipped } = groupRecordsByDate(records)
-    if (groups.size === 0) {
+    const merged = new Map() // date -> records[]
+    let totalParsed = 0
+    let skipped = 0
+    const fileSummaries = []
+
+    for (const file of files) {
+      const records = parseHikDetail(file.buffer)
+      totalParsed += records.length
+      const { groups, skipped: skipOne } = groupRecordsByDate(records)
+      skipped += skipOne
+      const perFile = []
+      for (const [date, rows] of groups) {
+        if (!merged.has(date)) merged.set(date, [])
+        merged.get(date).push(...rows)
+        perFile.push({ date, count: rows.length })
+      }
+      fileSummaries.push({
+        file_name: decodeUploadFilename(file.originalname || 'upload.xlsx'),
+        total: records.length,
+        dates: perFile.sort((a, b) => a.date.localeCompare(b.date)),
+      })
+    }
+
+    if (merged.size === 0) {
       return res.status(400).json({ error: '未识别到有效操作时间，无法按日期拆分' })
     }
 
-    const dates = [...groups.keys()].sort()
+    const dates = [...merged.keys()].sort()
     const [existingDays] = await pool.query(
       `SELECT id, DATE_FORMAT(day_date, '%Y-%m-%d') AS day_date, source_type
        FROM acceptance_day
@@ -323,23 +345,24 @@ app.post(
       })
     }
 
-    const overwrite = String(req.query.overwrite || req.body?.overwrite || '') === '1'
+    const overwrite = String(req.query.overwrite || '') === '1'
     const wouldOverwrite = dates.filter((d) => {
       const ex = dayByDate.get(d)
       return ex && ex.source_type !== 'excel'
     })
-    // 前端可先探测：不带 overwrite 且有已存在日期时返回预览
     if (!overwrite && wouldOverwrite.length) {
       return res.status(409).json({
         error: '部分日期文件夹已存在，确认后将覆盖对应验收明细',
         need_confirm: true,
+        file_count: files.length,
+        files: fileSummaries,
         dates: dates.map((date) => ({
           date,
-          count: groups.get(date).length,
+          count: merged.get(date).length,
           exists: !!dayByDate.get(date),
           will_overwrite: wouldOverwrite.includes(date),
         })),
-        total: records.length,
+        total: totalParsed,
         skipped,
       })
     }
@@ -349,7 +372,7 @@ app.post(
     try {
       await conn.beginTransaction()
       for (const date of dates) {
-        const dayRecords = groups.get(date)
+        const dayRecords = merged.get(date)
         let dayId = dayByDate.get(date)?.id
         let created = false
         if (!dayId) {
@@ -362,10 +385,7 @@ app.post(
         } else {
           await removeRemarkUploads(dayId)
           await conn.query('DELETE FROM scan_record WHERE day_id = ?', [dayId])
-          await conn.query(
-            `UPDATE acceptance_day SET source_type = 'detail' WHERE id = ?`,
-            [dayId]
-          )
+          await conn.query(`UPDATE acceptance_day SET source_type = 'detail' WHERE id = ?`, [dayId])
         }
         await insertScanRecords(conn, dayId, dayRecords)
         results.push({
@@ -378,8 +398,10 @@ app.post(
       }
       await conn.commit()
       res.json({
-        total: records.length,
+        total: totalParsed,
         skipped,
+        file_count: files.length,
+        files: fileSummaries,
         days: results,
         imported: results.reduce((a, x) => a + x.imported, 0),
       })

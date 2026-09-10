@@ -82,11 +82,12 @@ export const importXls = async (dayId, file) => {
   return request(`/api/days/${dayId}/import`, { method: 'POST', body: form })
 }
 
-/** 城市级按操作时间拆分导入；overwrite=true 时覆盖已有验收明细日期 */
-export const importSplitXls = async (cityId, file, { overwrite = false } = {}) => {
+/** 城市级按操作时间拆分导入（可多文件）；overwrite=true 时覆盖已有验收明细日期 */
+export const importSplitXls = async (cityId, files, { overwrite = false } = {}) => {
   await ensureAuth()
+  const list = Array.isArray(files) ? files : [files]
   const form = new FormData()
-  form.append('file', file)
+  for (const f of list) form.append('files', f)
   const q = overwrite ? '?overwrite=1' : ''
   const headers = {}
   if (token.value) headers.Authorization = `Bearer ${token.value}`

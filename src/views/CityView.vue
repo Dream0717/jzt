@@ -253,12 +253,15 @@ function startSplitImport() {
   splitInputRef.value?.click()
 }
 
-async function runSplitImport(file, overwrite) {
-  const r = await importSplitXls(props.cityId, file, { overwrite })
+async function runSplitImport(files, overwrite) {
+  const r = await importSplitXls(props.cityId, files, { overwrite })
+  const fileCount = r.file_count || files.length
   const lines = (r.days || [])
     .map((d) => `${d.date}：${d.imported} 条${d.created ? '（新建）' : '（覆盖）'}`)
     .join('\n')
-  ElMessage.success(`已按日期拆分导入 ${r.days?.length || 0} 天，共 ${r.imported} 条`)
+  ElMessage.success(
+    `已处理 ${fileCount} 个文件，拆分到 ${r.days?.length || 0} 天，共 ${r.imported} 条`
+  )
   if (lines) {
     try {
       await ElMessageBox.alert(lines, '拆分导入结果', { confirmButtonText: '知道了' })
@@ -270,21 +273,27 @@ async function runSplitImport(file, overwrite) {
 }
 
 async function onSplitFileChange(ev) {
-  const file = ev.target?.files?.[0]
+  const picked = [...(ev.target?.files || [])]
   ev.target.value = ''
-  if (!file) return
-  if (!/\.(xls|xlsx)$/i.test(file.name)) {
+  if (!picked.length) return
+  const files = picked.filter((f) => /\.(xls|xlsx)$/i.test(f.name))
+  if (!files.length) {
     ElMessage.warning('请选择 .xls 或 .xlsx 文件')
     return
+  }
+  if (files.length < picked.length) {
+    ElMessage.warning(`已忽略 ${picked.length - files.length} 个非 Excel 文件`)
   }
   splitting.value = true
   try {
     try {
-      await runSplitImport(file, false)
+      await runSplitImport(files, false)
     } catch (err) {
       if (isAuthCancelled(err)) return
       if (err.code === 'NEED_CONFIRM' && err.preview) {
         const preview = err.preview
+        const fileHint =
+          preview.file_count > 1 ? `共 ${preview.file_count} 个文件\n\n` : ''
         const lines = (preview.dates || [])
           .map(
             (d) =>
@@ -293,14 +302,14 @@ async function onSplitFileChange(ev) {
           .join('\n')
         try {
           await ElMessageBox.confirm(
-            `${preview.error || '部分日期已存在'}\n\n${lines}\n\n是否继续并覆盖已有验收明细？`,
+            `${fileHint}${preview.error || '部分日期已存在'}\n\n${lines}\n\n是否继续并覆盖已有验收明细？`,
             '确认拆分导入',
             { type: 'warning', confirmButtonText: '覆盖并导入', cancelButtonText: '取消' }
           )
         } catch {
           return
         }
-        await runSplitImport(file, true)
+        await runSplitImport(files, true)
         return
       }
       throw err
@@ -390,6 +399,7 @@ onMounted(refresh)
       ref="splitInputRef"
       type="file"
       accept=".xls,.xlsx"
+      multiple
       class="hidden-file"
       @change="onSplitFileChange"
     />
@@ -404,7 +414,7 @@ onMounted(refresh)
         <span class="toolbar-label">日期文件夹（{{ days.length }}）</span>
         <div class="toolbar-actions">
           <el-button type="success" :loading="splitting" @click="startSplitImport">
-            按日期拆分导入明细
+            按日期拆分导入（可多选）
           </el-button>
           <el-button type="primary" @click="openAdd">+ 添加日期</el-button>
         </div>
