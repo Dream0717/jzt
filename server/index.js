@@ -1,10 +1,24 @@
 import express from 'express'
 import multer from 'multer'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { pool, initSchema } from './db.js'
 import { parseHikDetail } from './importXls.js'
 import { login, logout, requireLogin } from './auth.js'
 import { toPreviewXlsx } from './excelConvert.js'
 import { decodeUploadFilename, fixStoredFilename } from './filename.js'
+import {
+  ensureUploadRoot,
+  writeUpload,
+  readUpload,
+  removeUpload,
+  removeDayUploads,
+  removeRemarkUploads,
+  remarkRelPath,
+  excelRelPath,
+} from './storage.js'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const app = express()
 app.use(express.json())
@@ -86,6 +100,12 @@ app.delete(
   '/api/cities/:id',
   requireLogin,
   h(async (req, res) => {
+    const [days] = await pool.query('SELECT id FROM acceptance_day WHERE city_id = ?', [
+      req.params.id,
+    ])
+    for (const day of days) {
+      await removeDayUploads(day.id)
+    }
     const [r] = await pool.query('DELETE FROM city WHERE id = ?', [req.params.id])
     if (r.affectedRows === 0) return res.status(404).json({ error: '城市不存在' })
     res.json({ ok: true })
@@ -168,6 +188,7 @@ app.delete(
   '/api/days/:id',
   requireLogin,
   h(async (req, res) => {
+    await removeDayUploads(req.params.id)
     const [r] = await pool.query('DELETE FROM acceptance_day WHERE id = ?', [req.params.id])
     if (r.affectedRows === 0) return res.status(404).json({ error: '日期不存在' })
     res.json({ ok: true })
@@ -217,6 +238,7 @@ app.post(
     const conn = await pool.getConnection()
     try {
       await conn.beginTransaction()
+      await removeRemarkUploads(req.params.id)
       await conn.query('DELETE FROM scan_record WHERE day_id = ?', [req.params.id])
       if (!days[0].source_type) {
         await conn.query(`UPDATE acceptance_day SET source_type = 'detail' WHERE id = ?`, [
@@ -304,7 +326,7 @@ app.get(
               COALESCE(NULLIF(doc_no, ''), doc_head_id) AS doc_no,
               serial_no, goods_name, spec, manufacturer, drug_code, operator, op_time, category,
               reason_note, problem_owner,
-              (remark_image IS NOT NULL) AS has_remark_image
+              (remark_image_path IS NOT NULL AND remark_image_path <> '') AS has_remark_image
        FROM scan_record WHERE ${whereSql}
        ORDER BY op_time DESC, id DESC
        LIMIT ? OFFSET ?`,
@@ -370,12 +392,18 @@ app.post(
     if (!req.file.mimetype.startsWith('image/')) {
       return res.status(400).json({ error: '仅支持图片文件' })
     }
-    const [rows] = await pool.query('SELECT id, category FROM scan_record WHERE id = ?', [req.params.id])
+    const [rows] = await pool.query(
+      'SELECT id, category, day_id, remark_image_path FROM scan_record WHERE id = ?',
+      [req.params.id]
+    )
     if (rows.length === 0) return res.status(404).json({ error: '记录不存在' })
     if (rows[0].category === '空') return res.status(400).json({ error: '正常扫码记录无需上传备注' })
+    await removeUpload(rows[0].remark_image_path)
+    const rel = remarkRelPath(rows[0].day_id, req.params.id, req.file.mimetype)
+    await writeUpload(rel, req.file.buffer)
     await pool.query(
-      'UPDATE scan_record SET remark_image = ?, remark_image_mime = ? WHERE id = ?',
-      [req.file.buffer, req.file.mimetype, req.params.id]
+      'UPDATE scan_record SET remark_image_path = ?, remark_image_mime = ? WHERE id = ?',
+      [rel, req.file.mimetype, req.params.id]
     )
     res.json({ ok: true, has_remark_image: true })
   })
@@ -385,15 +413,16 @@ app.get(
   '/api/records/:id/remark-image',
   h(async (req, res) => {
     const [rows] = await pool.query(
-      'SELECT remark_image, remark_image_mime FROM scan_record WHERE id = ?',
+      'SELECT remark_image_path, remark_image_mime FROM scan_record WHERE id = ?',
       [req.params.id]
     )
-    if (rows.length === 0 || !rows[0].remark_image) {
+    if (rows.length === 0 || !rows[0].remark_image_path) {
       return res.status(404).json({ error: '暂无备注图片' })
     }
+    const buf = await readUpload(rows[0].remark_image_path)
     res.set('Content-Type', rows[0].remark_image_mime || 'image/jpeg')
     res.set('Cache-Control', 'no-cache')
-    res.send(rows[0].remark_image)
+    res.send(buf)
   })
 )
 
@@ -401,11 +430,16 @@ app.delete(
   '/api/records/:id/remark-image',
   requireLogin,
   h(async (req, res) => {
-    const [r] = await pool.query(
-      'UPDATE scan_record SET remark_image = NULL, remark_image_mime = NULL WHERE id = ?',
+    const [rows] = await pool.query(
+      'SELECT id, remark_image_path FROM scan_record WHERE id = ?',
       [req.params.id]
     )
-    if (r.affectedRows === 0) return res.status(404).json({ error: '记录不存在' })
+    if (rows.length === 0) return res.status(404).json({ error: '记录不存在' })
+    await removeUpload(rows[0].remark_image_path)
+    await pool.query(
+      'UPDATE scan_record SET remark_image_path = NULL, remark_image_mime = NULL WHERE id = ?',
+      [req.params.id]
+    )
     res.json({ ok: true })
   })
 )
@@ -458,6 +492,12 @@ app.post(
     try {
       await conn.beginTransaction()
       if (overwrite) {
+        const [oldFiles] = await conn.query('SELECT file_path FROM day_excel WHERE day_id = ?', [
+          req.params.id,
+        ])
+        for (const f of oldFiles) {
+          await removeUpload(f.file_path)
+        }
         await conn.query('DELETE FROM day_excel WHERE day_id = ?', [req.params.id])
       }
       if (!days[0].source_type) {
@@ -466,16 +506,19 @@ app.post(
         ])
       }
       const [r] = await conn.query(
-        `INSERT INTO day_excel (day_id, file_name, mime_type, file_size, file_data)
+        `INSERT INTO day_excel (day_id, file_name, mime_type, file_size, file_path)
          VALUES (?, ?, ?, ?, ?)`,
         [
           req.params.id,
           fileName,
           req.file.mimetype || 'application/vnd.ms-excel',
           req.file.size,
-          req.file.buffer,
+          'pending',
         ]
       )
+      const rel = excelRelPath(req.params.id, r.insertId, fileName)
+      await writeUpload(rel, req.file.buffer)
+      await conn.query('UPDATE day_excel SET file_path = ? WHERE id = ?', [rel, r.insertId])
       await conn.commit()
       res.json({
         id: r.insertId,
@@ -515,12 +558,13 @@ app.get(
   '/api/excels/:id/file',
   h(async (req, res) => {
     const [rows] = await pool.query(
-      'SELECT file_name, mime_type, file_data FROM day_excel WHERE id = ?',
+      'SELECT file_name, mime_type, file_path FROM day_excel WHERE id = ?',
       [req.params.id]
     )
-    if (rows.length === 0 || !rows[0].file_data) {
+    if (rows.length === 0 || !rows[0].file_path) {
       return res.status(404).json({ error: 'Excel 不存在' })
     }
+    const buf = await readUpload(rows[0].file_path)
     const name = encodeURIComponent(fixStoredFilename(rows[0].file_name || 'file.xlsx'))
     const asDownload = String(req.query.download || '') === '1'
     res.set('Content-Type', rows[0].mime_type || 'application/octet-stream')
@@ -528,7 +572,7 @@ app.get(
       'Content-Disposition',
       `${asDownload ? 'attachment' : 'inline'}; filename*=UTF-8''${name}`
     )
-    res.send(rows[0].file_data)
+    res.send(buf)
   })
 )
 
@@ -537,13 +581,14 @@ app.get(
   '/api/excels/:id/preview',
   h(async (req, res) => {
     const [rows] = await pool.query(
-      'SELECT file_name, file_data FROM day_excel WHERE id = ?',
+      'SELECT file_name, file_path FROM day_excel WHERE id = ?',
       [req.params.id]
     )
-    if (rows.length === 0 || !rows[0].file_data) {
+    if (rows.length === 0 || !rows[0].file_path) {
       return res.status(404).json({ error: 'Excel 不存在' })
     }
-    const preview = toPreviewXlsx(rows[0].file_data, fixStoredFilename(rows[0].file_name))
+    const fileData = await readUpload(rows[0].file_path)
+    const preview = toPreviewXlsx(fileData, fixStoredFilename(rows[0].file_name))
     const name = encodeURIComponent(preview.fileName)
     res.set('Content-Type', preview.mime)
     res.set('X-Excel-Converted', preview.converted ? '1' : '0')
@@ -560,23 +605,29 @@ app.put(
   h(async (req, res) => {
     if (!req.file) return res.status(400).json({ error: '缺少文件内容' })
     const clientName = String(req.body?.filename || '').trim()
-    const [rows] = await pool.query('SELECT id, file_name FROM day_excel WHERE id = ?', [
-      req.params.id,
-    ])
+    const [rows] = await pool.query(
+      'SELECT id, day_id, file_name, file_path FROM day_excel WHERE id = ?',
+      [req.params.id]
+    )
     if (rows.length === 0) return res.status(404).json({ error: 'Excel 不存在' })
     let fileName = clientName || fixStoredFilename(rows[0].file_name)
     if (!/\.xlsx$/i.test(fileName)) {
       fileName = fileName.replace(/\.(xls)?$/i, '') + '.xlsx'
     }
+    const rel = excelRelPath(rows[0].day_id, req.params.id, fileName)
+    if (rows[0].file_path && rows[0].file_path !== rel) {
+      await removeUpload(rows[0].file_path)
+    }
+    await writeUpload(rel, req.file.buffer)
     await pool.query(
       `UPDATE day_excel
-       SET file_name = ?, mime_type = ?, file_size = ?, file_data = ?
+       SET file_name = ?, mime_type = ?, file_size = ?, file_path = ?
        WHERE id = ?`,
       [
         fileName,
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         req.file.size,
-        req.file.buffer,
+        rel,
         req.params.id,
       ]
     )
@@ -588,19 +639,32 @@ app.delete(
   '/api/excels/:id',
   requireLogin,
   h(async (req, res) => {
-    const [r] = await pool.query('DELETE FROM day_excel WHERE id = ?', [req.params.id])
-    if (r.affectedRows === 0) return res.status(404).json({ error: 'Excel 不存在' })
+    const [rows] = await pool.query('SELECT id, file_path FROM day_excel WHERE id = ?', [
+      req.params.id,
+    ])
+    if (rows.length === 0) return res.status(404).json({ error: 'Excel 不存在' })
+    await removeUpload(rows[0].file_path)
+    await pool.query('DELETE FROM day_excel WHERE id = ?', [req.params.id])
     res.json({ ok: true })
   })
 )
 
-const PORT = process.env.API_PORT || 3001
-initSchema()
+const distDir = path.resolve(__dirname, '../dist')
+app.use(express.static(distDir))
+app.get(/^\/(?!api).*/, (req, res, next) => {
+  if (req.method !== 'GET') return next()
+  res.sendFile(path.join(distDir, 'index.html'), (err) => {
+    if (err) next()
+  })
+})
+
+const PORT = process.env.API_PORT || process.env.PORT || 3001
+ensureUploadRoot()
+  .then(() => initSchema())
   .then(() => {
     app.listen(PORT, () => console.log(`[api] ready on http://localhost:${PORT}`))
   })
   .catch((e) => {
-    console.error('[api] 数据库连接/初始化失败：', e.message)
-    console.error('[api] 请检查项目根目录 .env 中的 DB_USER / DB_PASSWORD 配置')
+    console.error('[api] failed to start', e)
     process.exit(1)
   })

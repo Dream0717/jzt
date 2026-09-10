@@ -47,7 +47,7 @@ const SCHEMA_SQL = [
     raw_reason VARCHAR(512) DEFAULT NULL,
     category VARCHAR(255) NOT NULL DEFAULT '其他',
     reason_note VARCHAR(512) DEFAULT NULL,
-    remark_image MEDIUMBLOB DEFAULT NULL,
+    remark_image_path VARCHAR(512) DEFAULT NULL,
     remark_image_mime VARCHAR(64) DEFAULT NULL,
     problem_owner VARCHAR(16) DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -62,14 +62,13 @@ const SCHEMA_SQL = [
     file_name VARCHAR(255) NOT NULL,
     mime_type VARCHAR(128) DEFAULT NULL,
     file_size INT NOT NULL DEFAULT 0,
-    file_data LONGBLOB NOT NULL,
+    file_path VARCHAR(512) NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     KEY idx_day_excel (day_id),
     CONSTRAINT fk_excel_day FOREIGN KEY (day_id) REFERENCES acceptance_day(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ]
 
-// 已有库升级：CREATE IF NOT EXISTS 不会改列宽，需显式 ALTER
 const MIGRATE_SQL = [
   `ALTER TABLE scan_record MODIFY COLUMN serial_no VARCHAR(64) DEFAULT NULL`,
   `ALTER TABLE scan_record MODIFY COLUMN drug_code VARCHAR(255) DEFAULT NULL`,
@@ -77,12 +76,14 @@ const MIGRATE_SQL = [
   `ALTER TABLE scan_record MODIFY COLUMN raw_reason VARCHAR(512) DEFAULT NULL`,
   `ALTER TABLE scan_record MODIFY COLUMN category VARCHAR(255) NOT NULL DEFAULT '其他'`,
   `ALTER TABLE scan_record ADD COLUMN reason_note VARCHAR(512) DEFAULT NULL`,
-  `ALTER TABLE scan_record ADD COLUMN remark_image MEDIUMBLOB DEFAULT NULL`,
   `ALTER TABLE scan_record ADD COLUMN remark_image_mime VARCHAR(64) DEFAULT NULL`,
   `ALTER TABLE scan_record ADD COLUMN problem_owner VARCHAR(16) DEFAULT NULL`,
-  `UPDATE scan_record SET problem_owner = '我方' WHERE category = '未提取到监管码' AND (problem_owner IS NULL OR problem_owner = '')`,
+  `ALTER TABLE scan_record ADD COLUMN remark_image_path VARCHAR(512) DEFAULT NULL`,
   `ALTER TABLE acceptance_day ADD COLUMN source_type VARCHAR(16) DEFAULT NULL`,
   `ALTER TABLE acceptance_day ADD COLUMN manual_scan_rate VARCHAR(32) DEFAULT NULL`,
+  `ALTER TABLE day_excel ADD COLUMN file_path VARCHAR(512) DEFAULT NULL`,
+  `ALTER TABLE day_excel MODIFY COLUMN file_data LONGBLOB NULL`,
+  `UPDATE scan_record SET problem_owner = '我方' WHERE category = '未提取到监管码' AND (problem_owner IS NULL OR problem_owner = '')`,
   `UPDATE acceptance_day d
      SET source_type = 'detail'
      WHERE (source_type IS NULL OR source_type = '')
@@ -112,8 +113,11 @@ export async function initSchema() {
     try {
       await pool.query(sql)
     } catch (e) {
-      // 表尚未创建或列已是目标类型时忽略
-      if (e.code !== 'ER_NO_SUCH_TABLE' && e.code !== 'ER_DUP_FIELDNAME') {
+      if (
+        e.code !== 'ER_NO_SUCH_TABLE' &&
+        e.code !== 'ER_DUP_FIELDNAME' &&
+        e.code !== 'ER_BAD_FIELD_ERROR'
+      ) {
         console.warn('[db] migrate skip:', e.message)
       }
     }
