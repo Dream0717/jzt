@@ -11,6 +11,7 @@ import {
   uploadDayExcel,
   deleteExcel,
   importXls,
+  importSplitXls,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
 
@@ -33,6 +34,8 @@ const loadingExcels = ref(false)
 const pendingImportDay = ref(null)
 const detailInputRef = ref(null)
 const excelInputRef = ref(null)
+const splitInputRef = ref(null)
+const splitting = ref(false)
 const rateDrafts = ref({})
 
 function todayStr() {
@@ -246,6 +249,70 @@ async function onExcelFileChange(ev) {
   }
 }
 
+function startSplitImport() {
+  splitInputRef.value?.click()
+}
+
+async function runSplitImport(file, overwrite) {
+  const r = await importSplitXls(props.cityId, file, { overwrite })
+  const lines = (r.days || [])
+    .map((d) => `${d.date}：${d.imported} 条${d.created ? '（新建）' : '（覆盖）'}`)
+    .join('\n')
+  ElMessage.success(`已按日期拆分导入 ${r.days?.length || 0} 天，共 ${r.imported} 条`)
+  if (lines) {
+    try {
+      await ElMessageBox.alert(lines, '拆分导入结果', { confirmButtonText: '知道了' })
+    } catch {
+      // ignore
+    }
+  }
+  await refresh()
+}
+
+async function onSplitFileChange(ev) {
+  const file = ev.target?.files?.[0]
+  ev.target.value = ''
+  if (!file) return
+  if (!/\.(xls|xlsx)$/i.test(file.name)) {
+    ElMessage.warning('请选择 .xls 或 .xlsx 文件')
+    return
+  }
+  splitting.value = true
+  try {
+    try {
+      await runSplitImport(file, false)
+    } catch (err) {
+      if (isAuthCancelled(err)) return
+      if (err.code === 'NEED_CONFIRM' && err.preview) {
+        const preview = err.preview
+        const lines = (preview.dates || [])
+          .map(
+            (d) =>
+              `${d.date}：${d.count} 条${d.will_overwrite ? '（将覆盖已有）' : '（新建）'}`
+          )
+          .join('\n')
+        try {
+          await ElMessageBox.confirm(
+            `${preview.error || '部分日期已存在'}\n\n${lines}\n\n是否继续并覆盖已有验收明细？`,
+            '确认拆分导入',
+            { type: 'warning', confirmButtonText: '覆盖并导入', cancelButtonText: '取消' }
+          )
+        } catch {
+          return
+        }
+        await runSplitImport(file, true)
+        return
+      }
+      throw err
+    }
+  } catch (err) {
+    if (isAuthCancelled(err)) return
+    ElMessage.error(err.message)
+  } finally {
+    splitting.value = false
+  }
+}
+
 async function openExcelPanel(day) {
   excelDay.value = day
   showExcelPanel.value = true
@@ -319,6 +386,13 @@ onMounted(refresh)
       class="hidden-file"
       @change="onExcelFileChange"
     />
+    <input
+      ref="splitInputRef"
+      type="file"
+      accept=".xls,.xlsx"
+      class="hidden-file"
+      @change="onSplitFileChange"
+    />
 
     <div class="nav-back">
       <el-button @click="router.push('/')">← 返回城市列表</el-button>
@@ -328,7 +402,12 @@ onMounted(refresh)
     <el-card shadow="never" class="page-card">
       <div class="toolbar">
         <span class="toolbar-label">日期文件夹（{{ days.length }}）</span>
-        <el-button type="primary" @click="openAdd">+ 添加日期</el-button>
+        <div class="toolbar-actions">
+          <el-button type="success" :loading="splitting" @click="startSplitImport">
+            按日期拆分导入明细
+          </el-button>
+          <el-button type="primary" @click="openAdd">+ 添加日期</el-button>
+        </div>
       </div>
     </el-card>
 
@@ -457,6 +536,13 @@ onMounted(refresh)
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .toolbar-label {
   font-size: 15px;

@@ -81,6 +81,47 @@ function fmtDateTime(d) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+/** 操作时间 → YYYY-MM-DD HH:mm:ss（支持 Date / 字符串） */
+export function normalizeOpTime(v) {
+  if (v instanceof Date) return fmtDateTime(v)
+  const s = String(v ?? '').trim()
+  if (!s) return null
+  const m = s.match(
+    /(\d{4})[-\/年.](\d{1,2})[-\/月.](\d{1,2})日?(?:\s+|T)?(\d{1,2})?:?(\d{1,2})?:?(\d{1,2})?/
+  )
+  if (!m) return null
+  const p = (n) => String(Number(n)).padStart(2, '0')
+  const hasTime = m[4] != null && m[4] !== ''
+  const time = hasTime
+    ? `${p(m[4])}:${p(m[5] || 0)}:${p(m[6] || 0)}`
+    : '00:00:00'
+  return `${m[1]}-${p(m[2])}-${p(m[3])} ${time}`
+}
+
+/** 从操作时间取日期键 YYYY-MM-DD */
+export function dateKeyFromOpTime(opTime) {
+  if (!opTime) return null
+  const s = String(opTime).trim()
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1] : null
+}
+
+/** 按操作日期分组：{ '2026-08-31': records[], ... } */
+export function groupRecordsByDate(records) {
+  const groups = new Map()
+  let skipped = 0
+  for (const rec of records) {
+    const key = dateKeyFromOpTime(rec.op_time)
+    if (!key) {
+      skipped += 1
+      continue
+    }
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(rec)
+  }
+  return { groups, skipped }
+}
+
 /**
  * 最后一列「补扫原因」→ 分类规则：
  *  - 空白            → 空（正常扫上）
@@ -130,7 +171,7 @@ export function parseHikDetail(buffer) {
       if (!field) return
       if (field === 'op_time') {
         const v = cellToStr(cell)
-        rec.op_time = v instanceof Date ? fmtDateTime(v) : null
+        rec.op_time = normalizeOpTime(v)
         return
       }
       // 条码流水号等 ID 列：优先走科学计数法展开，避免 2.0201E+14

@@ -3,7 +3,7 @@ import multer from 'multer'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { pool, initSchema } from './db.js'
-import { parseHikDetail } from './importXls.js'
+import { parseHikDetail, groupRecordsByDate } from './importXls.js'
 import { login, logout, requireLogin } from './auth.js'
 import { toPreviewXlsx } from './excelConvert.js'
 import { decodeUploadFilename, fixStoredFilename } from './filename.js'
@@ -34,6 +34,37 @@ const uploadRemark = multer({
 })
 
 const h = (fn) => (req, res) => fn(req, res).catch((e) => res.status(500).json({ error: e.message }))
+
+const RECORD_COLS = 15
+const RECORD_INSERT_SQL = `INSERT INTO scan_record
+  (day_id, doc_head_id, doc_no, serial_no, drug_code, goods_no, goods_name, spec,
+   manufacturer, operator, op_time, goods_inner_no, raw_reason, category, problem_owner)
+  VALUES `
+
+async function insertScanRecords(conn, dayId, records) {
+  const BATCH = 500
+  for (let i = 0; i < records.length; i += BATCH) {
+    const chunk = records.slice(i, i + BATCH).map((r) => [
+      Number(dayId),
+      r.doc_head_id || null,
+      r.doc_no || null,
+      r.serial_no || null,
+      r.drug_code || null,
+      r.goods_no || null,
+      r.goods_name || null,
+      r.spec || null,
+      r.manufacturer || null,
+      r.operator || null,
+      r.op_time || null,
+      r.goods_inner_no || null,
+      r.raw_reason || null,
+      r.category,
+      r.category === '未提取到监管码' ? '我方' : null,
+    ])
+    const groups = chunk.map(() => `(${Array(RECORD_COLS).fill('?').join(',')})`).join(',')
+    await conn.query(RECORD_INSERT_SQL + groups, chunk.flat())
+  }
+}
 
 /** 读码率 = (总数 − 未提取到监管码且归属我方) ÷ 总数 × 100，保留两位小数 */
 function buildScanRate(totalRaw, ourMissRaw) {
@@ -246,35 +277,112 @@ app.post(
         ])
       }
 
-      const COLS = 15
-      const sql = `INSERT INTO scan_record
-        (day_id, doc_head_id, doc_no, serial_no, drug_code, goods_no, goods_name, spec,
-         manufacturer, operator, op_time, goods_inner_no, raw_reason, category, problem_owner)
-        VALUES `
-      const BATCH = 500
-      for (let i = 0; i < records.length; i += BATCH) {
-        const chunk = records.slice(i, i + BATCH).map((r) => [
-          Number(req.params.id),
-          r.doc_head_id || null,
-          r.doc_no || null,
-          r.serial_no || null,
-          r.drug_code || null,
-          r.goods_no || null,
-          r.goods_name || null,
-          r.spec || null,
-          r.manufacturer || null,
-          r.operator || null,
-          r.op_time || null,
-          r.goods_inner_no || null,
-          r.raw_reason || null,
-          r.category,
-          r.category === '未提取到监管码' ? '我方' : null,
-        ])
-        const groups = chunk.map(() => `(${Array(COLS).fill('?').join(',')})`).join(',')
-        await conn.query(sql + groups, chunk.flat()) // 手动展开多行占位符，mysql2 对嵌套数组展开不可靠
-      }
+      await insertScanRecords(conn, req.params.id, records)
       await conn.commit()
       res.json({ total: records.length, imported: records.length })
+    } catch (e) {
+      await conn.rollback()
+      throw e
+    } finally {
+      conn.release()
+    }
+  })
+)
+
+// ---------- 城市级：按操作时间拆分导入多日验收明细 ----------
+app.post(
+  '/api/cities/:cityId/import-split',
+  requireLogin,
+  upload.single('file'),
+  h(async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: '请选择文件' })
+    const [cities] = await pool.query('SELECT id, name FROM city WHERE id = ?', [req.params.cityId])
+    if (cities.length === 0) return res.status(404).json({ error: '城市不存在' })
+
+    const records = parseHikDetail(req.file.buffer)
+    const { groups, skipped } = groupRecordsByDate(records)
+    if (groups.size === 0) {
+      return res.status(400).json({ error: '未识别到有效操作时间，无法按日期拆分' })
+    }
+
+    const dates = [...groups.keys()].sort()
+    const [existingDays] = await pool.query(
+      `SELECT id, DATE_FORMAT(day_date, '%Y-%m-%d') AS day_date, source_type
+       FROM acceptance_day
+       WHERE city_id = ? AND day_date IN (${dates.map(() => '?').join(',')})`,
+      [req.params.cityId, ...dates]
+    )
+    const dayByDate = new Map(
+      existingDays.map((d) => [d.day_date, { id: d.id, source_type: d.source_type }])
+    )
+
+    const excelConflicts = dates.filter((d) => dayByDate.get(d)?.source_type === 'excel')
+    if (excelConflicts.length) {
+      return res.status(400).json({
+        error: `以下日期已是 Excel 模式，无法写入验收明细：${excelConflicts.join('、')}`,
+      })
+    }
+
+    const overwrite = String(req.query.overwrite || req.body?.overwrite || '') === '1'
+    const wouldOverwrite = dates.filter((d) => {
+      const ex = dayByDate.get(d)
+      return ex && ex.source_type !== 'excel'
+    })
+    // 前端可先探测：不带 overwrite 且有已存在日期时返回预览
+    if (!overwrite && wouldOverwrite.length) {
+      return res.status(409).json({
+        error: '部分日期文件夹已存在，确认后将覆盖对应验收明细',
+        need_confirm: true,
+        dates: dates.map((date) => ({
+          date,
+          count: groups.get(date).length,
+          exists: !!dayByDate.get(date),
+          will_overwrite: wouldOverwrite.includes(date),
+        })),
+        total: records.length,
+        skipped,
+      })
+    }
+
+    const conn = await pool.getConnection()
+    const results = []
+    try {
+      await conn.beginTransaction()
+      for (const date of dates) {
+        const dayRecords = groups.get(date)
+        let dayId = dayByDate.get(date)?.id
+        let created = false
+        if (!dayId) {
+          const [r] = await conn.query(
+            `INSERT INTO acceptance_day (city_id, day_date, source_type) VALUES (?, ?, 'detail')`,
+            [req.params.cityId, date]
+          )
+          dayId = r.insertId
+          created = true
+        } else {
+          await removeRemarkUploads(dayId)
+          await conn.query('DELETE FROM scan_record WHERE day_id = ?', [dayId])
+          await conn.query(
+            `UPDATE acceptance_day SET source_type = 'detail' WHERE id = ?`,
+            [dayId]
+          )
+        }
+        await insertScanRecords(conn, dayId, dayRecords)
+        results.push({
+          date,
+          day_id: dayId,
+          imported: dayRecords.length,
+          created,
+          overwritten: !created,
+        })
+      }
+      await conn.commit()
+      res.json({
+        total: records.length,
+        skipped,
+        days: results,
+        imported: results.reduce((a, x) => a + x.imported, 0),
+      })
     } catch (e) {
       await conn.rollback()
       throw e

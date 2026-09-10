@@ -81,6 +81,34 @@ export const importXls = async (dayId, file) => {
   form.append('file', file)
   return request(`/api/days/${dayId}/import`, { method: 'POST', body: form })
 }
+
+/** 城市级按操作时间拆分导入；overwrite=true 时覆盖已有验收明细日期 */
+export const importSplitXls = async (cityId, file, { overwrite = false } = {}) => {
+  await ensureAuth()
+  const form = new FormData()
+  form.append('file', file)
+  const q = overwrite ? '?overwrite=1' : ''
+  const headers = {}
+  if (token.value) headers.Authorization = `Bearer ${token.value}`
+  const res = await fetch(`/api/cities/${cityId}/import-split${q}`, {
+    method: 'POST',
+    headers,
+    body: form,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 401) {
+    clearSession()
+    throw new Error(data.error || '请先登录后再修改数据')
+  }
+  if (res.status === 409 && data.need_confirm) {
+    const err = new Error(data.error || '需要确认覆盖')
+    err.code = 'NEED_CONFIRM'
+    err.preview = data
+    throw err
+  }
+  if (!res.ok) throw new Error(data.error || `请求失败 (${res.status})`)
+  return data
+}
 export const getStats = (dayId) => request(`/api/days/${dayId}/stats`)
 export const listRecords = (dayId, category, keyword, page = 1, pageSize = 50) => {
   const q = new URLSearchParams({ category, keyword, page, pageSize })
