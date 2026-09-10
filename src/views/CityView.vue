@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { listDays, createDay, deleteDay } from '../api.js'
+import { isAuthCancelled } from '../auth.js'
 
 const props = defineProps({ cityId: String })
 const router = useRouter()
@@ -44,6 +45,7 @@ async function confirmAdd() {
     showAdd.value = false
     await refresh()
   } catch (e) {
+    if (isAuthCancelled(e)) return
     alert(e.message)
   }
 }
@@ -58,6 +60,7 @@ async function removeDay(day) {
     await deleteDay(day.id)
     await refresh()
   } catch (e) {
+    if (isAuthCancelled(e)) return
     alert(e.message)
   }
 }

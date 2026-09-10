@@ -12,6 +12,7 @@ import {
   deleteRemarkImage,
   remarkImageUrl,
 } from '../api.js'
+import { isAuthCancelled } from '../auth.js'
 
 const props = defineProps({ dayId: String })
 const router = useRouter()
@@ -133,6 +134,7 @@ async function onImport(e) {
     activeCategory.value = ''
     await refreshRecords()
   } catch (err) {
+    if (isAuthCancelled(err)) return
     alert('导入失败：' + err.message)
   } finally {
     importing.value = false
@@ -198,6 +200,7 @@ async function saveReason(r) {
     const data = await updateRecordReason(r.id, r.reason_note || '')
     r.reason_note = data.reason_note || ''
   } catch (e) {
+    if (isAuthCancelled(e)) return
     alert(e.message)
   } finally {
     savingReasonId.value = null
@@ -213,6 +216,7 @@ async function saveOwner(r) {
     r.problem_owner = data.problem_owner
     if (data.scan_rate) scanRate.value = data.scan_rate
   } catch (e) {
+    if (isAuthCancelled(e)) return
     alert(e.message)
     await refreshRecords()
   } finally {
@@ -235,6 +239,7 @@ async function uploadRemarkFile(r, file) {
     r.has_remark_image = true
     r._remarkVersion = Date.now()
   } catch (err) {
+    if (isAuthCancelled(err)) return
     alert(err.message)
   } finally {
     uploadingRemarkId.value = null
@@ -267,6 +272,7 @@ async function removeRemark(r) {
     r.has_remark_image = false
     r._remarkVersion = Date.now()
   } catch (e) {
+    if (isAuthCancelled(e)) return
     alert(e.message)
   }
 }

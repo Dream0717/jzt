@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import { pool, initSchema } from './db.js'
 import { parseHikDetail } from './importXls.js'
+import { login, logout, requireLogin } from './auth.js'
 
 const app = express()
 app.use(express.json())
@@ -26,6 +27,28 @@ function buildScanRate(totalRaw, ourMissRaw) {
   return { total, our_miss_count, percent }
 }
 
+// ---------- 登录 ----------
+app.post(
+  '/api/login',
+  h(async (req, res) => {
+    const username = String(req.body?.username || '').trim()
+    const password = String(req.body?.password || '')
+    const session = login(username, password)
+    if (!session) return res.status(401).json({ error: '账号或密码错误' })
+    res.json(session)
+  })
+)
+
+app.post(
+  '/api/logout',
+  h(async (req, res) => {
+    const header = req.headers.authorization || ''
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
+    logout(token)
+    res.json({ ok: true })
+  })
+)
+
 // ---------- 城市 ----------
 app.get(
   '/api/cities',
@@ -42,6 +65,7 @@ app.get(
 
 app.post(
   '/api/cities',
+  requireLogin,
   h(async (req, res) => {
     const name = String(req.body?.name || '').trim()
     if (!name) return res.status(400).json({ error: '城市名称不能为空' })
@@ -58,6 +82,7 @@ app.post(
 
 app.delete(
   '/api/cities/:id',
+  requireLogin,
   h(async (req, res) => {
     const [r] = await pool.query('DELETE FROM city WHERE id = ?', [req.params.id])
     if (r.affectedRows === 0) return res.status(404).json({ error: '城市不存在' })
@@ -89,6 +114,7 @@ app.get(
 
 app.post(
   '/api/cities/:cityId/days',
+  requireLogin,
   h(async (req, res) => {
     let date = String(req.body?.date || '').trim()
     if (!date) {
@@ -113,6 +139,7 @@ app.post(
 
 app.delete(
   '/api/days/:id',
+  requireLogin,
   h(async (req, res) => {
     const [r] = await pool.query('DELETE FROM acceptance_day WHERE id = ?', [req.params.id])
     if (r.affectedRows === 0) return res.status(404).json({ error: '日期不存在' })
@@ -146,6 +173,7 @@ app.get(
 // ---------- 导入 xls ----------
 app.post(
   '/api/days/:id/import',
+  requireLogin,
   upload.single('file'),
   h(async (req, res) => {
     if (!req.file) return res.status(400).json({ error: '请选择文件' })
@@ -253,6 +281,7 @@ app.get(
 // ---------- 单条记录：原因 / 备注图片 ----------
 app.patch(
   '/api/records/:id/reason',
+  requireLogin,
   h(async (req, res) => {
     const reasonNote = String(req.body?.reason_note ?? '').trim().slice(0, 512)
     const [rows] = await pool.query('SELECT id, category FROM scan_record WHERE id = ?', [req.params.id])
@@ -268,6 +297,7 @@ app.patch(
 
 app.patch(
   '/api/records/:id/problem-owner',
+  requireLogin,
   h(async (req, res) => {
     const owner = String(req.body?.problem_owner ?? '').trim()
     if (owner !== '客户' && owner !== '我方') {
@@ -297,6 +327,7 @@ app.patch(
 
 app.post(
   '/api/records/:id/remark-image',
+  requireLogin,
   uploadRemark.single('file'),
   h(async (req, res) => {
     if (!req.file) return res.status(400).json({ error: '请选择图片' })
@@ -332,6 +363,7 @@ app.get(
 
 app.delete(
   '/api/records/:id/remark-image',
+  requireLogin,
   h(async (req, res) => {
     const [r] = await pool.query(
       'UPDATE scan_record SET remark_image = NULL, remark_image_mime = NULL WHERE id = ?',

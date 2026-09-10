@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { listCities, createCity, deleteCity } from '../api.js'
+import { isAuthCancelled } from '../auth.js'
 
 const router = useRouter()
 const cities = ref([])
@@ -28,6 +29,7 @@ async function addCity() {
     newName.value = ''
     await refresh()
   } catch (e) {
+    if (isAuthCancelled(e)) return
     alert(e.message)
   }
 }
@@ -42,6 +44,7 @@ async function removeCity(city) {
     await deleteCity(city.id)
     await refresh()
   } catch (e) {
+    if (isAuthCancelled(e)) return
     alert(e.message)
   }
 }
