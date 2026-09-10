@@ -9,6 +9,7 @@ const titles = {
   home: '九州通读码数据验收 · 城市管理',
   city: '日期文件夹',
   day: '验收数据明细',
+  excel: 'Excel 浏览',
 }
 
 const loginUser = ref('')

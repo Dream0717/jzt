@@ -9,6 +9,12 @@ const router = createRouter({
     { path: '/', name: 'home', component: HomeView },
     { path: '/city/:cityId', name: 'city', component: CityView, props: true },
     { path: '/day/:dayId', name: 'day', component: DayView, props: true },
+    {
+      path: '/excel/:excelId',
+      name: 'excel',
+      component: () => import('./views/ExcelView.vue'),
+      props: true,
+    },
   ],
 })
 

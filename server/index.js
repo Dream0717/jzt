@@ -100,7 +100,8 @@ app.get(
       `SELECT d.id, d.day_date, d.created_at,
               COUNT(r.id) AS record_count,
               COUNT(DISTINCT r.category) AS category_count,
-              SUM(CASE WHEN r.category = '未提取到监管码' AND r.problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count
+              SUM(CASE WHEN r.category = '未提取到监管码' AND r.problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count,
+              (SELECT COUNT(*) FROM day_excel e WHERE e.day_id = d.id) AS excel_count
        FROM acceptance_day d
        LEFT JOIN scan_record r ON r.day_id = d.id
        WHERE d.city_id = ?
@@ -370,6 +371,101 @@ app.delete(
       [req.params.id]
     )
     if (r.affectedRows === 0) return res.status(404).json({ error: '记录不存在' })
+    res.json({ ok: true })
+  })
+)
+
+// ---------- 日期文件夹 Excel 附件（Univer 浏览） ----------
+app.get(
+  '/api/days/:id/excels',
+  h(async (req, res) => {
+    const [days] = await pool.query(
+      `SELECT d.id, d.day_date, d.city_id, c.name AS city_name
+       FROM acceptance_day d JOIN city c ON c.id = d.city_id
+       WHERE d.id = ?`,
+      [req.params.id]
+    )
+    if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
+    const [files] = await pool.query(
+      `SELECT id, file_name, mime_type, file_size, created_at
+       FROM day_excel WHERE day_id = ?
+       ORDER BY id DESC`,
+      [req.params.id]
+    )
+    res.json({ day: days[0], files })
+  })
+)
+
+app.post(
+  '/api/days/:id/excels',
+  requireLogin,
+  upload.single('file'),
+  h(async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: '请选择 Excel 文件' })
+    if (!/\.(xls|xlsx)$/i.test(req.file.originalname || '')) {
+      return res.status(400).json({ error: '仅支持 .xls / .xlsx' })
+    }
+    const [days] = await pool.query('SELECT id FROM acceptance_day WHERE id = ?', [req.params.id])
+    if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
+    const [r] = await pool.query(
+      `INSERT INTO day_excel (day_id, file_name, mime_type, file_size, file_data)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        req.params.id,
+        req.file.originalname,
+        req.file.mimetype || 'application/vnd.ms-excel',
+        req.file.size,
+        req.file.buffer,
+      ]
+    )
+    res.json({
+      id: r.insertId,
+      file_name: req.file.originalname,
+      file_size: req.file.size,
+    })
+  })
+)
+
+app.get(
+  '/api/excels/:id',
+  h(async (req, res) => {
+    const [rows] = await pool.query(
+      `SELECT e.id, e.day_id, e.file_name, e.mime_type, e.file_size, e.created_at,
+              d.day_date, d.city_id, c.name AS city_name
+       FROM day_excel e
+       JOIN acceptance_day d ON d.id = e.day_id
+       JOIN city c ON c.id = d.city_id
+       WHERE e.id = ?`,
+      [req.params.id]
+    )
+    if (rows.length === 0) return res.status(404).json({ error: 'Excel 不存在' })
+    res.json({ excel: rows[0] })
+  })
+)
+
+app.get(
+  '/api/excels/:id/file',
+  h(async (req, res) => {
+    const [rows] = await pool.query(
+      'SELECT file_name, mime_type, file_data FROM day_excel WHERE id = ?',
+      [req.params.id]
+    )
+    if (rows.length === 0 || !rows[0].file_data) {
+      return res.status(404).json({ error: 'Excel 不存在' })
+    }
+    const name = encodeURIComponent(rows[0].file_name || 'file.xlsx')
+    res.set('Content-Type', rows[0].mime_type || 'application/octet-stream')
+    res.set('Content-Disposition', `inline; filename*=UTF-8''${name}`)
+    res.send(rows[0].file_data)
+  })
+)
+
+app.delete(
+  '/api/excels/:id',
+  requireLogin,
+  h(async (req, res) => {
+    const [r] = await pool.query('DELETE FROM day_excel WHERE id = ?', [req.params.id])
+    if (r.affectedRows === 0) return res.status(404).json({ error: 'Excel 不存在' })
     res.json({ ok: true })
   })
 )

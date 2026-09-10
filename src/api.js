@@ -106,3 +106,28 @@ export const deleteRemarkImage = (id) =>
 
 export const remarkImageUrl = (id, version = '') =>
   `/api/records/${id}/remark-image${version ? `?v=${version}` : ''}`
+
+// 日期文件夹 Excel 附件
+export const listDayExcels = (dayId) => request(`/api/days/${dayId}/excels`)
+
+export const uploadDayExcel = async (dayId, file) => {
+  await ensureAuth()
+  const form = new FormData()
+  form.append('file', file)
+  return request(`/api/days/${dayId}/excels`, { method: 'POST', body: form })
+}
+
+export const getExcelMeta = (id) => request(`/api/excels/${id}`)
+
+export async function fetchExcelBuffer(id) {
+  const headers = {}
+  if (token.value) headers.Authorization = `Bearer ${token.value}`
+  const res = await fetch(`/api/excels/${id}/file`, { headers })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || `下载失败 (${res.status})`)
+  }
+  return res.arrayBuffer()
+}
+
+export const deleteExcel = (id) => writeRequest(`/api/excels/${id}`, { method: 'DELETE' })

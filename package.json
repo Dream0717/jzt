@@ -12,10 +12,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@univerjs/preset-sheets-core": "^0.25.1",
+    "@univerjs/presets": "^0.25.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "multer": "^2.3.0",
     "mysql2": "^3.11.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "rxjs": "^7.8.2",
     "vue": "^3.4.38",
     "vue-router": "^4.4.3",
     "xlsx": "^0.18.5"

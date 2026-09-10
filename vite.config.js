@@ -8,6 +8,15 @@ export default defineConfig({
     // vite-mcp：在 /__mcp 端点暴露 MCP 服务，提供浏览器控制台/存储/组件树等调试能力
     viteMcp(),
   ],
+  optimizeDeps: {
+    include: [
+      'react',
+      'react-dom',
+      'rxjs',
+      '@univerjs/presets',
+      '@univerjs/preset-sheets-core',
+    ],
+  },
   server: {
     port: 5173,
     proxy: {

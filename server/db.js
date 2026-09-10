@@ -54,6 +54,17 @@ const SCHEMA_SQL = [
     KEY idx_day_code (day_id, drug_code),
     CONSTRAINT fk_rec_day FOREIGN KEY (day_id) REFERENCES acceptance_day(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS day_excel (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    day_id INT NOT NULL,
+    file_name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(128) DEFAULT NULL,
+    file_size INT NOT NULL DEFAULT 0,
+    file_data LONGBLOB NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_day_excel (day_id),
+    CONSTRAINT fk_excel_day FOREIGN KEY (day_id) REFERENCES acceptance_day(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ]
 
 // 已有库升级：CREATE IF NOT EXISTS 不会改列宽，需显式 ALTER
