@@ -379,14 +379,8 @@ onMounted(refresh)
 
           <div class="day-actions">
             <template v-if="dayMode(d) === 'detail'">
-              <el-button size="small" @click="router.push(`/day/${d.id}`)">验收明细</el-button>
-              <el-button
-                size="small"
-                type="primary"
-                :loading="importingDayId === d.id"
-                @click="startImportDetail(d)"
-              >
-                导入明细
+              <el-button size="small" type="primary" @click="router.push(`/day/${d.id}`)">
+                验收明细
               </el-button>
             </template>
             <template v-else-if="dayMode(d) === 'excel'">

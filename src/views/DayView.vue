@@ -183,7 +183,7 @@ async function copySerial(r) {
   clearTimeout(copiedTimer)
   copiedTimer = setTimeout(() => {
     copiedId.value = null
-  }, 1200)
+  }, 4000)
   ElMessage.success({ message: '已复制条码流水号', duration: 1000 })
 }
 
@@ -463,7 +463,14 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
                 无匹配记录
               </td>
             </tr>
-            <tr v-for="r in records" :key="r.id">
+            <tr
+              v-for="r in records"
+              :key="r.id"
+              :class="{
+                'row-copied': copiedId === r.id,
+                'row-our-problem': r.problem_owner === '我方',
+              }"
+            >
               <td>{{ r.doc_no }}</td>
               <td>
                 <el-button
@@ -718,6 +725,18 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 }
 .serial-copy .copy-icon {
   margin-left: 4px;
+}
+.rec-table tbody tr.row-our-problem td {
+  background: #fef0f0;
+  color: #c45656;
+}
+.rec-table tbody tr.row-copied td {
+  background: #ecf5ff;
+  box-shadow: inset 0 0 0 2px var(--el-color-primary);
+}
+.rec-table tbody tr.row-our-problem.row-copied td {
+  background: #fde2e2;
+  box-shadow: inset 0 0 0 2px #f56c6c;
 }
 .td-reason {
   min-width: 160px;

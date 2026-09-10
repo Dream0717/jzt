@@ -1,0 +1,19 @@
+---
+description: 每次改动必须同步本地、GitHub、服务器三端
+alwaysApply: true
+---
+
+# 三端同步
+
+完成任何功能/修复/样式改动后，必须同步：
+
+1. **本地**：按仓库 Git 提交规范创建 commit（中文说明）
+2. **GitHub**：`git push origin main`（或当前分支）
+3. **服务器** `47.98.200.117:/opt/jzt`：
+   - 后端改动：上传对应 `server/` 文件并 `pm2 restart jzt`
+   - 前端改动：本地 `npm run build`，上传 `dist`（可用 zip），然后 `pm2 restart jzt`
+   - 勿在服务器上 `npm run build`（易 OOM）
+
+SSH：`root@47.98.200.117`，应用目录 `/opt/jzt`，进程名 `jzt`（pm2）。
+
+完成后在回复中说明三端已同步，并给出访问地址 http://47.98.200.117:3000
