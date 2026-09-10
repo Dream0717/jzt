@@ -7,6 +7,7 @@ import {
   importXls,
   getStats,
   listRecords,
+  getReasonOptions,
   updateRecordReason,
   updateProblemOwner,
   uploadRemarkImage,
@@ -61,6 +62,7 @@ async function refreshBase() {
     }
     scanRate.value = d.scan_rate || { total: 0, our_miss_count: 0, percent: 0 }
     stats.value = s.stats
+    await loadReasonOptions()
   } catch (e) {
     ElMessage.error(e.message)
   }
@@ -163,7 +165,6 @@ function fmtTime(v) {
 }
 
 const copiedId = ref(null)
-let copiedTimer = null
 async function copySerial(r) {
   const text = r.serial_no == null ? '' : String(r.serial_no)
   if (!text) return
@@ -180,11 +181,41 @@ async function copySerial(r) {
     document.body.removeChild(ta)
   }
   copiedId.value = r.id
-  clearTimeout(copiedTimer)
-  copiedTimer = setTimeout(() => {
-    copiedId.value = null
-  }, 4000)
   ElMessage.success({ message: '已复制条码流水号', duration: 1000 })
+}
+
+const reasonOptions = ref([])
+async function loadReasonOptions() {
+  try {
+    const data = await getReasonOptions(props.dayId)
+    reasonOptions.value = data.options || []
+  } catch {
+    reasonOptions.value = []
+  }
+}
+
+function queryReasonSuggestions(queryString, cb) {
+  const q = String(queryString || '').trim()
+  const list = (reasonOptions.value || [])
+    .filter((o) => !q || String(o.value || '').includes(q))
+    .map((o) => ({ value: o.value, problem_owner: o.problem_owner }))
+  cb(list)
+}
+
+function applyOwnerForReason(r, reason, owner) {
+  if (r.category !== '未提取到监管码') return
+  if (!owner || (owner !== '客户' && owner !== '我方')) return
+  const note = String(reason || '').trim()
+  r.problem_owner = owner
+  if (!note) return
+  for (const row of records.value) {
+    if (
+      row.category === '未提取到监管码' &&
+      String(row.reason_note || '').trim() === note
+    ) {
+      row.problem_owner = owner
+    }
+  }
 }
 
 const totalCount = computed(() => stats.value.reduce((a, s) => a + s.count, 0))
@@ -208,12 +239,27 @@ async function saveReason(r) {
   try {
     const data = await updateRecordReason(r.id, r.reason_note || '')
     r.reason_note = data.reason_note || ''
+    if (data.problem_owner) {
+      applyOwnerForReason(r, r.reason_note, data.problem_owner)
+      // 同步读码率：归属可能已变
+      const dayData = await getDay(props.dayId)
+      if (dayData.scan_rate) scanRate.value = dayData.scan_rate
+    }
+    await loadReasonOptions()
   } catch (e) {
     if (isAuthCancelled(e)) return
     ElMessage.error(e.message)
   } finally {
     savingReasonId.value = null
   }
+}
+
+async function onReasonSelect(r, item) {
+  r.reason_note = item.value
+  if (item.problem_owner) {
+    applyOwnerForReason(r, item.value, item.problem_owner)
+  }
+  await saveReason(r)
 }
 
 const savingOwnerId = ref(null)
@@ -224,6 +270,14 @@ async function saveOwner(r) {
     const data = await updateProblemOwner(r.id, r.problem_owner || '我方')
     r.problem_owner = data.problem_owner
     if (data.scan_rate) scanRate.value = data.scan_rate
+    const note = String(data.reason_note || r.reason_note || '').trim()
+    if (note) {
+      applyOwnerForReason(r, note, data.problem_owner)
+      if ((data.affected || 0) > 1) {
+        ElMessage.success(`已同步 ${data.affected} 条相同原因的问题归属`)
+      }
+    }
+    await loadReasonOptions()
   } catch (e) {
     if (isAuthCancelled(e)) return
     ElMessage.error(e.message)
@@ -509,13 +563,17 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
                 </el-select>
               </td>
               <td v-if="showIssueColumns" class="td-reason">
-                <el-input
+                <el-autocomplete
                   v-if="isIssueRecord(r)"
                   v-model="r.reason_note"
                   size="small"
                   placeholder="填写原因说明"
                   maxlength="512"
+                  :fetch-suggestions="queryReasonSuggestions"
                   :disabled="savingReasonId === r.id"
+                  style="width: 100%"
+                  value-key="value"
+                  @select="(item) => onReasonSelect(r, item)"
                   @blur="saveReason(r)"
                 />
                 <span v-else class="muted">—</span>

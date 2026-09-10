@@ -87,6 +87,8 @@ export const listRecords = (dayId, category, keyword, page = 1, pageSize = 50) =
   return request(`/api/days/${dayId}/records?${q}`)
 }
 
+export const getReasonOptions = (dayId) => request(`/api/days/${dayId}/reason-options`)
+
 export const updateRecordReason = (id, reason_note) =>
   writeRequest(`/api/records/${id}/reason`, {
     method: 'PATCH',
@@ -97,6 +99,12 @@ export const updateProblemOwner = (id, problem_owner) =>
   writeRequest(`/api/records/${id}/problem-owner`, {
     method: 'PATCH',
     body: JSON.stringify({ problem_owner }),
+  })
+
+export const updateProblemOwnerByReason = (dayId, reason_note, problem_owner) =>
+  writeRequest(`/api/days/${dayId}/problem-owner-by-reason`, {
+    method: 'PATCH',
+    body: JSON.stringify({ reason_note, problem_owner }),
   })
 
 export const uploadRemarkImage = async (id, file) => {

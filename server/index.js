@@ -337,19 +337,112 @@ app.get(
 )
 
 // ---------- 单条记录：原因 / 备注图片 ----------
+app.get(
+  '/api/days/:id/reason-options',
+  h(async (req, res) => {
+    const [rows] = await pool.query(
+      `SELECT reason_note,
+              SUBSTRING_INDEX(
+                GROUP_CONCAT(
+                  CASE
+                    WHEN problem_owner IN ('客户', '我方') THEN problem_owner
+                    ELSE NULL
+                  END
+                  ORDER BY id ASC
+                ),
+                ',',
+                1
+              ) AS problem_owner
+       FROM scan_record
+       WHERE day_id = ?
+         AND reason_note IS NOT NULL
+         AND TRIM(reason_note) <> ''
+       GROUP BY reason_note
+       ORDER BY MAX(id) DESC`,
+      [req.params.id]
+    )
+    res.json({
+      options: rows.map((r) => ({
+        value: r.reason_note,
+        problem_owner: r.problem_owner || null,
+      })),
+    })
+  })
+)
+
+app.patch(
+  '/api/days/:id/problem-owner-by-reason',
+  requireLogin,
+  h(async (req, res) => {
+    const reasonNote = String(req.body?.reason_note ?? '').trim().slice(0, 512)
+    const owner = String(req.body?.problem_owner ?? '').trim()
+    if (!reasonNote) return res.status(400).json({ error: '原因不能为空' })
+    if (owner !== '客户' && owner !== '我方') {
+      return res.status(400).json({ error: '问题归属只能是「客户」或「我方」' })
+    }
+    const [days] = await pool.query('SELECT id FROM acceptance_day WHERE id = ?', [req.params.id])
+    if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
+    const [r] = await pool.query(
+      `UPDATE scan_record
+       SET problem_owner = ?
+       WHERE day_id = ?
+         AND category = '未提取到监管码'
+         AND reason_note = ?`,
+      [owner, req.params.id, reasonNote]
+    )
+    const [[rate]] = await pool.query(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count
+       FROM scan_record WHERE day_id = ?`,
+      [req.params.id]
+    )
+    res.json({
+      ok: true,
+      affected: r.affectedRows,
+      problem_owner: owner,
+      scan_rate: buildScanRate(rate.total, rate.our_miss_count),
+    })
+  })
+)
+
 app.patch(
   '/api/records/:id/reason',
   requireLogin,
   h(async (req, res) => {
     const reasonNote = String(req.body?.reason_note ?? '').trim().slice(0, 512)
-    const [rows] = await pool.query('SELECT id, category FROM scan_record WHERE id = ?', [req.params.id])
+    const [rows] = await pool.query('SELECT id, category, day_id FROM scan_record WHERE id = ?', [
+      req.params.id,
+    ])
     if (rows.length === 0) return res.status(404).json({ error: '记录不存在' })
     if (rows[0].category === '空') return res.status(400).json({ error: '正常扫码记录无需填写原因' })
     await pool.query('UPDATE scan_record SET reason_note = ? WHERE id = ?', [
       reasonNote || null,
       req.params.id,
     ])
-    res.json({ ok: true, reason_note: reasonNote || null })
+
+    let suggestedOwner = null
+    if (reasonNote && rows[0].category === '未提取到监管码') {
+      const [peers] = await pool.query(
+        `SELECT problem_owner FROM scan_record
+         WHERE day_id = ? AND reason_note = ? AND id <> ?
+           AND problem_owner IN ('客户', '我方')
+         ORDER BY id ASC LIMIT 1`,
+        [rows[0].day_id, reasonNote, req.params.id]
+      )
+      if (peers.length) {
+        suggestedOwner = peers[0].problem_owner
+        await pool.query('UPDATE scan_record SET problem_owner = ? WHERE id = ?', [
+          suggestedOwner,
+          req.params.id,
+        ])
+      }
+    }
+
+    res.json({
+      ok: true,
+      reason_note: reasonNote || null,
+      problem_owner: suggestedOwner,
+    })
   })
 )
 
@@ -361,14 +454,30 @@ app.patch(
     if (owner !== '客户' && owner !== '我方') {
       return res.status(400).json({ error: '问题归属只能是「客户」或「我方」' })
     }
-    const [rows] = await pool.query('SELECT id, category, day_id FROM scan_record WHERE id = ?', [
-      req.params.id,
-    ])
+    const [rows] = await pool.query(
+      'SELECT id, category, day_id, reason_note FROM scan_record WHERE id = ?',
+      [req.params.id]
+    )
     if (rows.length === 0) return res.status(404).json({ error: '记录不存在' })
     if (rows[0].category !== '未提取到监管码') {
       return res.status(400).json({ error: '仅「未提取到监管码」可设置问题归属' })
     }
-    await pool.query('UPDATE scan_record SET problem_owner = ? WHERE id = ?', [owner, req.params.id])
+    const reasonNote = String(rows[0].reason_note || '').trim()
+    let affected = 0
+    if (reasonNote) {
+      const [r] = await pool.query(
+        `UPDATE scan_record
+         SET problem_owner = ?
+         WHERE day_id = ?
+           AND category = '未提取到监管码'
+           AND reason_note = ?`,
+        [owner, rows[0].day_id, reasonNote]
+      )
+      affected = r.affectedRows
+    } else {
+      await pool.query('UPDATE scan_record SET problem_owner = ? WHERE id = ?', [owner, req.params.id])
+      affected = 1
+    }
     const [[rate]] = await pool.query(
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count
@@ -378,6 +487,8 @@ app.patch(
     res.json({
       ok: true,
       problem_owner: owner,
+      affected,
+      reason_note: reasonNote || null,
       scan_rate: buildScanRate(rate.total, rate.our_miss_count),
     })
   })
