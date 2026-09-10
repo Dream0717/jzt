@@ -8,7 +8,14 @@ export default defineConfig({
     viteMcp(),
   ],
   optimizeDeps: {
-    include: ['element-plus', '@vue-office/excel', 'vue-demi'],
+    include: [
+      'element-plus',
+      'react',
+      'react-dom',
+      'rxjs',
+      '@univerjs/presets',
+      '@univerjs/preset-sheets-core',
+    ],
   },
   server: {
     port: 5173,

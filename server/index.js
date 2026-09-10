@@ -4,6 +4,7 @@ import { pool, initSchema } from './db.js'
 import { parseHikDetail } from './importXls.js'
 import { login, logout, requireLogin } from './auth.js'
 import { toPreviewXlsx } from './excelConvert.js'
+import { decodeUploadFilename, fixStoredFilename } from './filename.js'
 
 const app = express()
 app.use(express.json())
@@ -393,7 +394,10 @@ app.get(
        ORDER BY id DESC`,
       [req.params.id]
     )
-    res.json({ day: days[0], files })
+    res.json({
+      day: days[0],
+      files: files.map((f) => ({ ...f, file_name: fixStoredFilename(f.file_name) })),
+    })
   })
 )
 
@@ -403,27 +407,45 @@ app.post(
   upload.single('file'),
   h(async (req, res) => {
     if (!req.file) return res.status(400).json({ error: '请选择 Excel 文件' })
-    if (!/\.(xls|xlsx)$/i.test(req.file.originalname || '')) {
+    const clientName = String(req.body?.filename || '').trim()
+    const fileName = clientName || decodeUploadFilename(req.file.originalname)
+    if (!/\.(xls|xlsx)$/i.test(fileName)) {
       return res.status(400).json({ error: '仅支持 .xls / .xlsx' })
     }
     const [days] = await pool.query('SELECT id FROM acceptance_day WHERE id = ?', [req.params.id])
     if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
-    const [r] = await pool.query(
-      `INSERT INTO day_excel (day_id, file_name, mime_type, file_size, file_data)
-       VALUES (?, ?, ?, ?, ?)`,
-      [
-        req.params.id,
-        req.file.originalname,
-        req.file.mimetype || 'application/vnd.ms-excel',
-        req.file.size,
-        req.file.buffer,
-      ]
-    )
-    res.json({
-      id: r.insertId,
-      file_name: req.file.originalname,
-      file_size: req.file.size,
-    })
+
+    const overwrite = String(req.body?.overwrite || '') === '1'
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      if (overwrite) {
+        await conn.query('DELETE FROM day_excel WHERE day_id = ?', [req.params.id])
+      }
+      const [r] = await conn.query(
+        `INSERT INTO day_excel (day_id, file_name, mime_type, file_size, file_data)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          req.params.id,
+          fileName,
+          req.file.mimetype || 'application/vnd.ms-excel',
+          req.file.size,
+          req.file.buffer,
+        ]
+      )
+      await conn.commit()
+      res.json({
+        id: r.insertId,
+        file_name: fileName,
+        file_size: req.file.size,
+        overwritten: overwrite,
+      })
+    } catch (e) {
+      await conn.rollback()
+      throw e
+    } finally {
+      conn.release()
+    }
   })
 )
 
@@ -440,7 +462,9 @@ app.get(
       [req.params.id]
     )
     if (rows.length === 0) return res.status(404).json({ error: 'Excel 不存在' })
-    res.json({ excel: rows[0] })
+    const excel = rows[0]
+    excel.file_name = fixStoredFilename(excel.file_name)
+    res.json({ excel })
   })
 )
 
@@ -454,7 +478,7 @@ app.get(
     if (rows.length === 0 || !rows[0].file_data) {
       return res.status(404).json({ error: 'Excel 不存在' })
     }
-    const name = encodeURIComponent(rows[0].file_name || 'file.xlsx')
+    const name = encodeURIComponent(fixStoredFilename(rows[0].file_name || 'file.xlsx'))
     const asDownload = String(req.query.download || '') === '1'
     res.set('Content-Type', rows[0].mime_type || 'application/octet-stream')
     res.set(
@@ -476,12 +500,44 @@ app.get(
     if (rows.length === 0 || !rows[0].file_data) {
       return res.status(404).json({ error: 'Excel 不存在' })
     }
-    const preview = toPreviewXlsx(rows[0].file_data, rows[0].file_name)
+    const preview = toPreviewXlsx(rows[0].file_data, fixStoredFilename(rows[0].file_name))
     const name = encodeURIComponent(preview.fileName)
     res.set('Content-Type', preview.mime)
     res.set('X-Excel-Converted', preview.converted ? '1' : '0')
     res.set('Content-Disposition', `inline; filename*=UTF-8''${name}`)
     res.send(preview.buffer)
+  })
+)
+
+/** 保存编辑后的 Excel 内容（覆盖原文件二进制） */
+app.put(
+  '/api/excels/:id/content',
+  requireLogin,
+  upload.single('file'),
+  h(async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: '缺少文件内容' })
+    const clientName = String(req.body?.filename || '').trim()
+    const [rows] = await pool.query('SELECT id, file_name FROM day_excel WHERE id = ?', [
+      req.params.id,
+    ])
+    if (rows.length === 0) return res.status(404).json({ error: 'Excel 不存在' })
+    let fileName = clientName || fixStoredFilename(rows[0].file_name)
+    if (!/\.xlsx$/i.test(fileName)) {
+      fileName = fileName.replace(/\.(xls)?$/i, '') + '.xlsx'
+    }
+    await pool.query(
+      `UPDATE day_excel
+       SET file_name = ?, mime_type = ?, file_size = ?, file_data = ?
+       WHERE id = ?`,
+      [
+        fileName,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        req.file.size,
+        req.file.buffer,
+        req.params.id,
+      ]
+    )
+    res.json({ ok: true, file_name: fileName, file_size: req.file.size })
   })
 )
 

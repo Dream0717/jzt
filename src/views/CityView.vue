@@ -97,19 +97,34 @@ function scanRateOf(d) {
   return `${(((total - our) / total) * 100).toFixed(2)}%`
 }
 
-async function onImportExcel(uploadFile, day) {
-  const file = uploadFile.raw
-  if (!file) return false
+async function onImportExcel(opt, day) {
+  const file = opt?.file
+  if (!file) return
   if (!/\.(xls|xlsx)$/i.test(file.name)) {
     ElMessage.warning('请选择 .xls 或 .xlsx 文件')
-    return false
+    return
   }
+
+  let overwrite = false
+  if ((day.excel_count || 0) > 0) {
+    try {
+      await ElMessageBox.confirm(
+        `该日期已有 ${day.excel_count} 个 Excel 文件。重新导入将覆盖（删除旧文件后写入新文件），是否继续？`,
+        '覆盖确认',
+        { type: 'warning', confirmButtonText: '覆盖导入', cancelButtonText: '取消' }
+      )
+      overwrite = true
+    } catch {
+      return
+    }
+  }
+
   importingDayId.value = day.id
   try {
-    const r = await uploadDayExcel(day.id, file)
+    const r = await uploadDayExcel(day.id, file, { overwrite })
     await refresh()
     try {
-      await ElMessageBox.confirm(`已导入「${r.file_name}」，是否立即打开浏览？`, '导入成功', {
+      await ElMessageBox.confirm(`已导入「${r.file_name}」，是否立即打开编辑？`, '导入成功', {
         confirmButtonText: '打开',
         cancelButtonText: '稍后',
         type: 'success',
@@ -119,12 +134,11 @@ async function onImportExcel(uploadFile, day) {
       // 稍后
     }
   } catch (err) {
-    if (isAuthCancelled(err)) return false
+    if (isAuthCancelled(err)) return
     ElMessage.error(err.message)
   } finally {
     importingDayId.value = null
   }
-  return false
 }
 
 async function openExcelPanel(day) {
@@ -209,10 +223,11 @@ onMounted(refresh)
               :show-file-list="false"
               accept=".xls,.xlsx"
               :disabled="importingDayId === d.id"
-              :http-request="() => {}"
-              :before-upload="(file) => onImportExcel({ raw: file }, d)"
+              :http-request="(opt) => onImportExcel(opt, d)"
             >
-              <el-button size="small" type="primary" :loading="importingDayId === d.id">导入Excel</el-button>
+              <el-button size="small" type="primary" :loading="importingDayId === d.id">
+                {{ d.excel_count > 0 ? '重新导入Excel' : '导入Excel' }}
+              </el-button>
             </el-upload>
             <el-button v-if="d.excel_count > 0" size="small" @click="openExcelPanel(d)">打开Excel</el-button>
             <el-button size="small" type="danger" plain @click="removeDay(d)">删除</el-button>

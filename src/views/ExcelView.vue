@@ -1,60 +1,136 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import VueOfficeExcel from '@vue-office/excel'
-import '@vue-office/excel/lib/index.css'
-import { getExcelMeta, fetchExcelBuffer, deleteExcel } from '../api.js'
+import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets'
+import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
+import sheetsZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
+import '@univerjs/preset-sheets-core/lib/index.css'
+import {
+  getExcelMeta,
+  fetchExcelBuffer,
+  deleteExcel,
+  saveExcelContent,
+} from '../api.js'
+import { excelBufferToWorkbookData, snapshotToXlsxArrayBuffer } from '../utils/excelUniver.js'
 import { isAuthCancelled } from '../auth.js'
 
 const props = defineProps({ excelId: String })
 const router = useRouter()
 
+const containerRef = ref(null)
 const meta = ref(null)
-const src = ref(null)
 const loading = ref(true)
 const saving = ref(false)
 const tip = ref('')
+let univerInstance = null
+let univerAPI = null
+
+function destroyUniver() {
+  try {
+    univerAPI?.dispose?.()
+  } catch {}
+  try {
+    univerInstance?.dispose?.()
+  } catch {}
+  univerAPI = null
+  univerInstance = null
+  if (containerRef.value) containerRef.value.innerHTML = ''
+}
 
 async function init() {
   loading.value = true
   tip.value = ''
-  src.value = null
   try {
     const data = await getExcelMeta(props.excelId)
     meta.value = data.excel
-    document.title = `${meta.value.file_name} - Excel 浏览`
+    document.title = `${meta.value.file_name} - Excel 编辑`
 
     const preview = await fetchExcelBuffer(props.excelId, { preview: true })
-    src.value = preview.buffer
     if (preview.converted) {
       tip.value =
-        '当前文件为旧版 .xls，预览已自动转码为 xlsx（中文乱码已处理）。旧格式无法保留嵌入图片；请尽量使用 .xlsx 导入以完整显示图片。'
+        '已从旧版 .xls 转码打开。可编辑后点「保存修改」写回数据库（保存为 .xlsx）。嵌入图片在转换/保存后可能丢失。'
+    } else {
+      tip.value =
+        '可直接编辑单元格，点「保存修改」写回数据库。「下载」导出当前表格。注意：保存会重建文件，嵌入图片可能丢失。'
     }
+
+    const workbookData = excelBufferToWorkbookData(preview.buffer, meta.value.file_name)
+    loading.value = false
+    await nextTick()
+    if (!containerRef.value) throw new Error('容器未就绪')
+
+    destroyUniver()
+    const created = createUniver({
+      locale: LocaleType.ZH_CN,
+      locales: { [LocaleType.ZH_CN]: mergeLocales(sheetsZhCN) },
+      presets: [UniverSheetsCorePreset({ container: containerRef.value })],
+    })
+    univerInstance = created.univer
+    univerAPI = created.univerAPI
+    univerAPI.createWorkbook(workbookData)
   } catch (e) {
     ElMessage.error(e.message || '加载失败')
-  } finally {
     loading.value = false
   }
 }
 
-async function saveFile() {
+function getSnapshot() {
+  const wb = univerAPI?.getActiveWorkbook?.()
+  if (!wb) throw new Error('表格未就绪')
+  // Univer 新版本推荐 save()；旧版为 getSnapshot()
+  if (typeof wb.save === 'function') return wb.save()
+  if (typeof wb.getSnapshot === 'function') return wb.getSnapshot()
+  throw new Error('当前版本无法导出表格数据')
+}
+
+async function saveChanges() {
+  if (!meta.value || !univerAPI) return
+  saving.value = true
+  try {
+    const snapshot = getSnapshot()
+    const arr = snapshotToXlsxArrayBuffer(snapshot)
+    let fileName = meta.value.file_name || 'edited.xlsx'
+    if (!/\.xlsx$/i.test(fileName)) fileName = fileName.replace(/\.(xls)?$/i, '') + '.xlsx'
+    const result = await saveExcelContent(props.excelId, arr, fileName)
+    meta.value.file_name = result.file_name
+    meta.value.file_size = result.file_size
+    ElMessage.success('修改已保存到数据库')
+  } catch (e) {
+    if (isAuthCancelled(e)) return
+    ElMessage.error(e.message || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function downloadLocal() {
   if (!meta.value) return
   saving.value = true
   try {
-    const { buffer } = await fetchExcelBuffer(props.excelId, { download: true })
-    const blob = new Blob([buffer], {
-      type: meta.value.mime_type || 'application/octet-stream',
+    // 优先下载当前编辑内容
+    let arr
+    let fileName = meta.value.file_name || 'export.xlsx'
+    try {
+      const snapshot = getSnapshot()
+      arr = snapshotToXlsxArrayBuffer(snapshot)
+      if (!/\.xlsx$/i.test(fileName)) fileName = fileName.replace(/\.(xls)?$/i, '') + '.xlsx'
+    } catch {
+      const file = await fetchExcelBuffer(props.excelId, { download: true })
+      arr = file.buffer
+    }
+    const blob = new Blob([arr], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = meta.value.file_name || 'export.xlsx'
+    a.download = fileName
     document.body.appendChild(a)
     a.click()
     a.remove()
     URL.revokeObjectURL(url)
-    ElMessage.success('已保存到本地')
+    ElMessage.success('已下载到本地')
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -80,18 +156,8 @@ async function removeFile() {
   }
 }
 
-function onRendered() {
-  ElMessage.success({ message: 'Excel 渲染完成', duration: 1500 })
-}
-
-function onError() {
-  ElMessage.error('Excel 渲染失败，请尝试另存为 .xlsx 后重新导入')
-}
-
 onMounted(init)
-onBeforeUnmount(() => {
-  src.value = null
-})
+onBeforeUnmount(destroyUniver)
 </script>
 
 <template>
@@ -103,29 +169,18 @@ onBeforeUnmount(() => {
         <span class="file-name">{{ meta.file_name }}</span>
       </div>
       <div class="excel-actions">
-        <el-button type="primary" :loading="saving" :disabled="!meta" @click="saveFile">保存到本地</el-button>
-        <el-button type="danger" plain :disabled="!meta" @click="removeFile">删除此文件</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!meta || loading" @click="saveChanges">
+          保存修改
+        </el-button>
+        <el-button :disabled="!meta || loading" @click="downloadLocal">下载</el-button>
+        <el-button type="danger" plain :disabled="!meta" @click="removeFile">删除</el-button>
       </div>
     </div>
 
-    <el-alert
-      v-if="tip"
-      class="excel-tip"
-      :title="tip"
-      type="warning"
-      show-icon
-      :closable="false"
-    />
+    <el-alert v-if="tip" class="excel-tip" :title="tip" type="info" show-icon :closable="false" />
 
     <div class="excel-body" v-loading="loading" element-loading-text="正在加载 Excel…">
-      <vue-office-excel
-        v-if="src"
-        :src="src"
-        class="office-excel"
-        @rendered="onRendered"
-        @error="onError"
-      />
-      <el-empty v-else-if="!loading" description="无法加载文件" />
+      <div ref="containerRef" class="univer-host"></div>
     </div>
   </div>
 </template>
@@ -173,11 +228,13 @@ onBeforeUnmount(() => {
   border-radius: 0;
 }
 .excel-body {
+  position: relative;
   flex: 1;
   min-height: 0;
-  position: relative;
 }
-.office-excel {
+.univer-host {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }

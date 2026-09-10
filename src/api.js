@@ -110,10 +110,12 @@ export const remarkImageUrl = (id, version = '') =>
 // 日期文件夹 Excel 附件
 export const listDayExcels = (dayId) => request(`/api/days/${dayId}/excels`)
 
-export const uploadDayExcel = async (dayId, file) => {
+export const uploadDayExcel = async (dayId, file, { overwrite = false } = {}) => {
   await ensureAuth()
   const form = new FormData()
   form.append('file', file)
+  form.append('filename', file.name || 'file.xlsx')
+  form.append('overwrite', overwrite ? '1' : '0')
   return request(`/api/days/${dayId}/excels`, { method: 'POST', body: form })
 }
 
@@ -135,6 +137,17 @@ export async function fetchExcelBuffer(id, { preview = false, download = false }
     converted: res.headers.get('X-Excel-Converted') === '1',
     contentType: res.headers.get('Content-Type') || '',
   }
+}
+
+export const saveExcelContent = async (id, arrayBuffer, fileName) => {
+  await ensureAuth()
+  const form = new FormData()
+  const blob = new Blob([arrayBuffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  form.append('file', blob, fileName || 'edited.xlsx')
+  form.append('filename', fileName || 'edited.xlsx')
+  return request(`/api/excels/${id}/content`, { method: 'PUT', body: form })
 }
 
 export const deleteExcel = (id) => writeRequest(`/api/excels/${id}`, { method: 'DELETE' })
