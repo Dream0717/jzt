@@ -595,10 +595,6 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
       destroy-on-close
       @closed="resetPreviewTransform"
     >
-      <div class="preview-toolbar">
-        <span>滚轮缩放 · 拖拽移动</span>
-        <el-button size="small" @click="resetPreviewTransform">复位</el-button>
-      </div>
       <div
         class="preview-viewport"
         :class="{ 'is-dragging': previewDragging }"
@@ -607,6 +603,7 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
         @mousemove="onPreviewMouseMove"
         @mouseup="onPreviewMouseUp"
         @mouseleave="onPreviewMouseUp"
+        @dblclick="resetPreviewTransform"
       >
         <img
           v-if="previewImage"
@@ -765,14 +762,6 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-.preview-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-  color: #909399;
-  font-size: 13px;
 }
 .preview-viewport {
   height: min(78vh, 820px);

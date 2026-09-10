@@ -333,38 +333,48 @@ onMounted(refresh)
     </el-card>
 
     <el-empty v-if="!loading && days.length === 0" description="还没有日期文件夹，点击右上角「添加日期」创建" />
-    <el-row v-else :gutter="16">
-      <el-col v-for="d in days" :key="d.id" :xs="24" :sm="12" :md="8" :lg="6">
+    <el-row v-else :gutter="16" class="day-grid">
+      <el-col v-for="d in days" :key="d.id" :xs="24" :sm="12" :md="8" :lg="6" class="day-col">
         <el-card shadow="hover" class="day-card">
           <div class="day-date" @click="openDay(d)">{{ d.day_date }}</div>
           <div class="day-week">{{ fmtWeek(d.day_date) }}</div>
 
-          <div class="day-meta" v-if="dayMode(d) === 'detail'">
-            <el-tag size="small" type="primary">验收明细</el-tag>
-            <template v-if="d.record_count > 0">
-              <div>{{ d.record_count }} 条 · {{ d.category_count || 0 }} 类</div>
-              <span class="scan-rate">读码率 <em>{{ scanRateOf(d) }}</em></span>
-            </template>
-            <div v-else class="muted">尚未导入验收明细</div>
-          </div>
-
-          <div class="day-meta" v-else-if="dayMode(d) === 'excel'">
-            <el-tag size="small" type="success">Excel</el-tag>
-            <div v-if="d.excel_count > 0">已导入 Excel</div>
-            <div v-else class="muted">尚未导入 Excel</div>
-            <div class="manual-rate">
-              <span>读码率</span>
-              <el-input
-                v-model="rateDrafts[d.id]"
-                size="small"
-                placeholder="如 98.50%"
-                @change="saveManualRate(d)"
-              />
+          <div class="day-meta">
+            <div class="meta-tag">
+              <el-tag v-if="dayMode(d) === 'detail'" size="small" type="primary">验收明细</el-tag>
+              <el-tag v-else-if="dayMode(d) === 'excel'" size="small" type="success">Excel</el-tag>
+              <el-tag v-else size="small" type="info">未指定</el-tag>
             </div>
-          </div>
 
-          <div class="day-meta" v-else>
-            <div class="muted">未指定类型</div>
+            <div class="meta-status">
+              <template v-if="dayMode(d) === 'detail'">
+                <template v-if="d.record_count > 0">{{ d.record_count }} 条 · {{ d.category_count || 0 }} 类</template>
+                <span v-else class="muted">尚未导入验收明细</span>
+              </template>
+              <template v-else-if="dayMode(d) === 'excel'">
+                <template v-if="d.excel_count > 0">已导入 Excel</template>
+                <span v-else class="muted">尚未导入 Excel</span>
+              </template>
+              <span v-else class="muted">—</span>
+            </div>
+
+            <div class="meta-rate">
+              <template v-if="dayMode(d) === 'detail'">
+                <span class="scan-rate">读码率 <em>{{ d.record_count > 0 ? scanRateOf(d) : '—' }}</em></span>
+              </template>
+              <template v-else-if="dayMode(d) === 'excel'">
+                <div class="manual-rate">
+                  <span>读码率</span>
+                  <el-input
+                    v-model="rateDrafts[d.id]"
+                    size="small"
+                    placeholder="如 98.50%"
+                    @change="saveManualRate(d)"
+                  />
+                </div>
+              </template>
+              <span v-else class="muted">读码率 —</span>
+            </div>
           </div>
 
           <div class="day-actions">
@@ -458,30 +468,57 @@ onMounted(refresh)
   font-size: 15px;
   font-weight: 600;
 }
-.day-card {
+.day-col {
+  display: flex;
   margin-bottom: 16px;
+}
+.day-card {
+  width: 100%;
+  height: 100%;
   text-align: center;
+  display: flex;
+  flex-direction: column;
+}
+.day-card :deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 260px;
 }
 .day-date {
   font-size: 20px;
   font-weight: 700;
   cursor: pointer;
   color: var(--el-color-primary);
+  line-height: 1.3;
 }
 .day-week {
   color: #909399;
   font-size: 13px;
   margin: 4px 0 10px;
+  line-height: 1.2;
 }
 .day-meta {
-  min-height: 72px;
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 8px;
   font-size: 13px;
   color: #606266;
   margin-bottom: 12px;
+  min-height: 96px;
+}
+.meta-tag,
+.meta-status,
+.meta-rate {
+  width: 100%;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .scan-rate em {
   font-style: normal;
@@ -491,6 +528,7 @@ onMounted(refresh)
 .manual-rate {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   width: 100%;
   max-width: 220px;
@@ -499,10 +537,13 @@ onMounted(refresh)
   color: #c0c4cc;
 }
 .day-actions {
+  margin-top: auto;
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
+  align-content: flex-start;
   gap: 8px;
+  min-height: 68px;
 }
 .add-form {
   display: flex;
