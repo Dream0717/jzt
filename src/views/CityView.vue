@@ -226,7 +226,7 @@ onMounted(refresh)
               :http-request="(opt) => onImportExcel(opt, d)"
             >
               <el-button size="small" type="primary" :loading="importingDayId === d.id">
-                {{ d.excel_count > 0 ? '重新导入Excel' : '导入Excel' }}
+                导入Excel
               </el-button>
             </el-upload>
             <el-button v-if="d.excel_count > 0" size="small" @click="openExcelPanel(d)">打开Excel</el-button>

@@ -15,6 +15,9 @@ export default defineConfig({
       'rxjs',
       '@univerjs/presets',
       '@univerjs/preset-sheets-core',
+      '@univerjs/preset-sheets-drawing',
+      'univer-file-import',
+      'exceljs',
     ],
   },
   server: {

@@ -4,15 +4,22 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
+import { UniverSheetsDrawingPreset } from '@univerjs/preset-sheets-drawing'
 import sheetsZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
+import sheetsDrawingZhCN from '@univerjs/preset-sheets-drawing/locales/zh-CN'
+import { importFile, addImagesToWorkbook } from 'univer-file-import'
 import '@univerjs/preset-sheets-core/lib/index.css'
+import '@univerjs/preset-sheets-drawing/lib/index.css'
 import {
   getExcelMeta,
   fetchExcelBuffer,
   deleteExcel,
   saveExcelContent,
 } from '../api.js'
-import { excelBufferToWorkbookData, snapshotToXlsxArrayBuffer } from '../utils/excelUniver.js'
+import {
+  excelBufferToWorkbookData,
+  snapshotToXlsxKeepingImages,
+} from '../utils/excelUniver.js'
 import { isAuthCancelled } from '../auth.js'
 
 const props = defineProps({ excelId: String })
@@ -25,6 +32,8 @@ const saving = ref(false)
 const tip = ref('')
 let univerInstance = null
 let univerAPI = null
+let originalBuffer = null
+let importedImages = []
 
 function destroyUniver() {
   try {
@@ -38,24 +47,71 @@ function destroyUniver() {
   if (containerRef.value) containerRef.value.innerHTML = ''
 }
 
+function waitRendered(api, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      resolve()
+    }
+    try {
+      const stages = api?.Enum?.LifecycleStages
+      const rendered = stages?.Rendered ?? stages?.Steady
+      api.addEvent(api.Event.LifeCycleChanged, (event) => {
+        if (rendered == null || event.stage === rendered || event.stage === stages?.Steady) {
+          finish()
+        }
+      })
+    } catch {
+      // ignore
+    }
+    setTimeout(finish, timeoutMs)
+  })
+}
+
 async function init() {
   loading.value = true
   tip.value = ''
+  importedImages = []
+  originalBuffer = null
   try {
     const data = await getExcelMeta(props.excelId)
     meta.value = data.excel
     document.title = `${meta.value.file_name} - Excel 编辑`
 
+    // 优先用预览缓冲（xls 已转码）；xlsx 原样含图
     const preview = await fetchExcelBuffer(props.excelId, { preview: true })
-    if (preview.converted) {
-      tip.value =
-        '已从旧版 .xls 转码打开。可编辑后点「保存修改」写回数据库（保存为 .xlsx）。嵌入图片在转换/保存后可能丢失。'
-    } else {
-      tip.value =
-        '可直接编辑单元格，点「保存修改」写回数据库。「下载」导出当前表格。注意：保存会重建文件，嵌入图片可能丢失。'
+    originalBuffer = preview.buffer
+
+    const fileName = preview.converted
+      ? String(meta.value.file_name || 'file.xls').replace(/\.xls$/i, '.xlsx')
+      : meta.value.file_name || 'file.xlsx'
+    const file = new File([preview.buffer], fileName, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+
+    let workbookData
+    try {
+      const imported = await importFile(file, { includeImages: true })
+      workbookData = imported.workbookData
+      importedImages = imported.images || []
+    } catch (e) {
+      console.warn('[excel] importFile failed, fallback SheetJS', e)
+      workbookData = excelBufferToWorkbookData(preview.buffer, meta.value.file_name)
     }
 
-    const workbookData = excelBufferToWorkbookData(preview.buffer, meta.value.file_name)
+    const imgCount = importedImages.length
+    if (preview.converted) {
+      tip.value = imgCount
+        ? `已从旧版 .xls 转码打开（解析到 ${imgCount} 张图）。可编辑后保存；建议源文件使用 .xlsx 以更好保留图片。`
+        : '已从旧版 .xls 转码打开。可编辑后保存；嵌入图片在 .xls 转换后可能无法保留，建议使用 .xlsx。'
+    } else {
+      tip.value = imgCount
+        ? `可编辑单元格与查看图片（已加载 ${imgCount} 张）。保存时会尽量保留原文件中的图片。`
+        : '可直接编辑单元格。若原文件含图但未显示，请确认是 .xlsx 且图片为浮动/单元格图。'
+    }
+
     loading.value = false
     await nextTick()
     if (!containerRef.value) throw new Error('容器未就绪')
@@ -63,12 +119,30 @@ async function init() {
     destroyUniver()
     const created = createUniver({
       locale: LocaleType.ZH_CN,
-      locales: { [LocaleType.ZH_CN]: mergeLocales(sheetsZhCN) },
-      presets: [UniverSheetsCorePreset({ container: containerRef.value })],
+      locales: {
+        [LocaleType.ZH_CN]: mergeLocales(sheetsZhCN, sheetsDrawingZhCN),
+      },
+      presets: [
+        UniverSheetsCorePreset({ container: containerRef.value }),
+        UniverSheetsDrawingPreset(),
+      ],
     })
     univerInstance = created.univer
     univerAPI = created.univerAPI
     univerAPI.createWorkbook(workbookData)
+
+    if (importedImages.length) {
+      await waitRendered(univerAPI, 3000)
+      try {
+        const result = await addImagesToWorkbook(univerAPI, importedImages)
+        if (result?.failed) {
+          console.warn('[excel] some images failed', result)
+        }
+      } catch (e) {
+        console.warn('[excel] addImagesToWorkbook failed', e)
+        ElMessage.warning('部分图片未能插入编辑器，保存时仍会尽量从原文件保留')
+      }
+    }
   } catch (e) {
     ElMessage.error(e.message || '加载失败')
     loading.value = false
@@ -78,7 +152,6 @@ async function init() {
 function getSnapshot() {
   const wb = univerAPI?.getActiveWorkbook?.()
   if (!wb) throw new Error('表格未就绪')
-  // Univer 新版本推荐 save()；旧版为 getSnapshot()
   if (typeof wb.save === 'function') return wb.save()
   if (typeof wb.getSnapshot === 'function') return wb.getSnapshot()
   throw new Error('当前版本无法导出表格数据')
@@ -89,12 +162,13 @@ async function saveChanges() {
   saving.value = true
   try {
     const snapshot = getSnapshot()
-    const arr = snapshotToXlsxArrayBuffer(snapshot)
+    const arr = await snapshotToXlsxKeepingImages(snapshot, originalBuffer, importedImages)
     let fileName = meta.value.file_name || 'edited.xlsx'
     if (!/\.xlsx$/i.test(fileName)) fileName = fileName.replace(/\.(xls)?$/i, '') + '.xlsx'
     const result = await saveExcelContent(props.excelId, arr, fileName)
     meta.value.file_name = result.file_name
     meta.value.file_size = result.file_size
+    originalBuffer = arr
     ElMessage.success('修改已保存到数据库')
   } catch (e) {
     if (isAuthCancelled(e)) return
@@ -108,12 +182,11 @@ async function downloadLocal() {
   if (!meta.value) return
   saving.value = true
   try {
-    // 优先下载当前编辑内容
     let arr
     let fileName = meta.value.file_name || 'export.xlsx'
     try {
       const snapshot = getSnapshot()
-      arr = snapshotToXlsxArrayBuffer(snapshot)
+      arr = await snapshotToXlsxKeepingImages(snapshot, originalBuffer, importedImages)
       if (!/\.xlsx$/i.test(fileName)) fileName = fileName.replace(/\.(xls)?$/i, '') + '.xlsx'
     } catch {
       const file = await fetchExcelBuffer(props.excelId, { download: true })
