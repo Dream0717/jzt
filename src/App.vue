@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { isLoggedIn, username, showLoginModal, cancelLogin } from './auth.js'
 import { login, logout } from './api.js'
@@ -11,10 +11,18 @@ const titles = {
   day: '验收数据明细',
 }
 
-const loginUser = ref('dream')
-const loginPass = ref('dream')
+const loginUser = ref('')
+const loginPass = ref('')
 const loginError = ref('')
 const loggingIn = ref(false)
+
+watch(showLoginModal, (open) => {
+  if (open) {
+    loginUser.value = ''
+    loginPass.value = ''
+    loginError.value = ''
+  }
+})
 
 async function doLogin() {
   loginError.value = ''
@@ -66,7 +74,13 @@ async function doLogout() {
         <p class="login-tip">浏览数据无需登录；添加、删除、导入或修改记录时需要登录</p>
         <label class="login-field">
           账号
-          <input v-model="loginUser" class="login-input" autocomplete="username" @keyup.enter="doLogin" />
+          <input
+            v-model="loginUser"
+            class="login-input"
+            autocomplete="username"
+            placeholder="请输入账号"
+            @keyup.enter="doLogin"
+          />
         </label>
         <label class="login-field">
           密码
@@ -75,6 +89,7 @@ async function doLogout() {
             type="password"
             class="login-input"
             autocomplete="current-password"
+            placeholder="请输入密码"
             @keyup.enter="doLogin"
           />
         </label>

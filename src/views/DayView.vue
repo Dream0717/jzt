@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getDay,
@@ -289,9 +289,52 @@ watch(page, (p) => {
   jumpPage.value = p
 })
 
+const tableWrap = ref(null)
+const hScrollTop = ref(null)
+const tableScrollWidth = ref(0)
+let syncingScroll = false
+let resizeObs = null
+
+function syncTableWidth() {
+  const el = tableWrap.value
+  if (!el) return
+  tableScrollWidth.value = el.scrollWidth
+}
+
+function onTopScroll() {
+  if (syncingScroll || !tableWrap.value || !hScrollTop.value) return
+  syncingScroll = true
+  tableWrap.value.scrollLeft = hScrollTop.value.scrollLeft
+  syncingScroll = false
+}
+
+function onTableScroll() {
+  if (syncingScroll || !tableWrap.value || !hScrollTop.value) return
+  syncingScroll = true
+  hScrollTop.value.scrollLeft = tableWrap.value.scrollLeft
+  syncingScroll = false
+}
+
 onMounted(async () => {
   await refreshBase()
   await refreshRecords()
+  await nextTick()
+  syncTableWidth()
+  if (tableWrap.value && typeof ResizeObserver !== 'undefined') {
+    resizeObs = new ResizeObserver(() => syncTableWidth())
+    resizeObs.observe(tableWrap.value)
+    const table = tableWrap.value.querySelector('table')
+    if (table) resizeObs.observe(table)
+  }
+})
+
+onBeforeUnmount(() => {
+  resizeObs?.disconnect()
+})
+
+watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
+  await nextTick()
+  syncTableWidth()
 })
 </script>
 
@@ -345,7 +388,15 @@ onMounted(async () => {
         <button class="btn-primary" @click="doSearch">搜索</button>
       </div>
 
-      <div class="table-wrap">
+      <div
+        v-show="tableScrollWidth > 0"
+        ref="hScrollTop"
+        class="hscroll-top"
+        @scroll="onTopScroll"
+      >
+        <div class="hscroll-spacer" :style="{ width: tableScrollWidth + 'px' }"></div>
+      </div>
+      <div ref="tableWrap" class="table-wrap" @scroll="onTableScroll">
         <table class="rec-table">
           <thead>
             <tr>
@@ -616,11 +667,27 @@ onMounted(async () => {
 .search-input:focus {
   border-color: #2f6fed;
 }
+.hscroll-top {
+  overflow-x: auto;
+  overflow-y: hidden;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: 12px;
+  margin-bottom: 4px;
+  background: #fff;
+}
+.hscroll-spacer {
+  height: 1px;
+}
 .table-wrap {
-  overflow: auto;
-  max-height: calc(100vh - 340px);
+  overflow-x: auto;
   border: 1px solid #edf0f5;
   border-radius: 8px;
+  scrollbar-width: none;
+}
+.table-wrap::-webkit-scrollbar {
+  height: 0;
 }
 .rec-table {
   width: max-content;
@@ -640,7 +707,7 @@ onMounted(async () => {
   color: #5b6779;
   font-weight: 600;
   position: sticky;
-  top: 0;
+  top: 12px;
   z-index: 1;
 }
 .td-center {
