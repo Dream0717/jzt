@@ -128,7 +128,7 @@ app.get(
        LEFT JOIN scan_record r ON r.day_id = d.id
        WHERE d.city_id = ?
        GROUP BY d.id, d.day_date, d.source_type, d.manual_scan_rate, d.created_at
-       ORDER BY d.day_date DESC, d.id DESC`,
+       ORDER BY d.day_date ASC, d.id ASC`,
       [req.params.cityId]
     )
     res.json({ city: cities[0], days })
