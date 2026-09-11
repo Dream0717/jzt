@@ -16,6 +16,7 @@ import {
   matchDingSaoLog,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
+import { includeDingSaoInRate } from '../scanRateMode.js'
 
 const props = defineProps({ dayId: String })
 const router = useRouter()
@@ -28,7 +29,6 @@ const scanRate = ref({
   percent: 0,
   percent_with_ding_sao: 0,
 })
-const includeDingSaoInRate = ref(false)
 const stats = ref([])
 const activeCategory = ref('')
 const keyword = ref('')
