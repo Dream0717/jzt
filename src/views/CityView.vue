@@ -518,7 +518,16 @@ onMounted(refresh)
             :class="{ 'day-card-active': String(highlightDayId) === String(d.id) }"
             :data-day-id="d.id"
           >
-            <div class="day-date" @click="openDay(d)">{{ d.day_date }}</div>
+            <div class="day-date" @click="openDay(d)">
+              <el-tooltip
+                v-if="Number(d.owner_no_remark_count) > 0"
+                :content="`有 ${Number(d.owner_no_remark_count)} 条「我方」记录尚未上传备注图片`"
+                placement="top"
+              >
+                <el-icon class="day-warn-icon" @click.stop><WarningFilled /></el-icon>
+              </el-tooltip>
+              <span>{{ d.day_date }}</span>
+            </div>
             <div class="day-week">{{ fmtWeek(d.day_date) }}</div>
 
             <div class="day-meta">
@@ -711,6 +720,15 @@ onMounted(refresh)
   cursor: pointer;
   color: var(--el-color-primary);
   line-height: 1.3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.day-warn-icon {
+  color: #f56c6c;
+  font-size: 18px;
+  flex-shrink: 0;
 }
 .day-week {
   color: #909399;

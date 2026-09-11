@@ -246,6 +246,11 @@ app.get(
               GROUP_CONCAT(DISTINCT r.category ORDER BY r.category SEPARATOR '\u0001') AS categories,
               SUM(CASE WHEN r.category = '未提取到监管码' AND r.problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count,
               SUM(CASE WHEN r.category = '海康无记录' AND r.problem_owner = '我方' THEN 1 ELSE 0 END) AS ding_sao_found_count,
+              SUM(CASE
+                    WHEN r.problem_owner = '我方'
+                     AND (r.remark_image_path IS NULL OR r.remark_image_path = '')
+                    THEN 1 ELSE 0
+                  END) AS owner_no_remark_count,
               (SELECT COUNT(*) FROM day_excel e WHERE e.day_id = d.id) AS excel_count
        FROM acceptance_day d
        LEFT JOIN scan_record r ON r.day_id = d.id
