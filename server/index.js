@@ -35,6 +35,15 @@ const uploadRemark = multer({
 
 const h = (fn) => (req, res) => fn(req, res).catch((e) => res.status(500).json({ error: e.message }))
 
+/** 可设置问题归属的分类（同原因跨日期同步） */
+const OWNER_CATEGORIES = new Set(['未提取到监管码', '海康无记录'])
+function canSetProblemOwner(category) {
+  return OWNER_CATEGORIES.has(String(category || ''))
+}
+function defaultProblemOwner(category) {
+  return canSetProblemOwner(category) ? '我方' : null
+}
+
 const RECORD_COLS = 15
 const RECORD_INSERT_SQL = `INSERT INTO scan_record
   (day_id, doc_head_id, doc_no, serial_no, drug_code, goods_no, goods_name, spec,
@@ -59,7 +68,7 @@ async function insertScanRecords(conn, dayId, records) {
       r.goods_inner_no || null,
       r.raw_reason || null,
       r.category,
-      r.category === '未提取到监管码' ? '我方' : null,
+      defaultProblemOwner(r.category),
     ])
     const groups = chunk.map(() => `(${Array(RECORD_COLS).fill('?').join(',')})`).join(',')
     await conn.query(RECORD_INSERT_SQL + groups, chunk.flat())
@@ -685,9 +694,13 @@ app.patch(
   h(async (req, res) => {
     const reasonNote = String(req.body?.reason_note ?? '').trim().slice(0, 512)
     const owner = String(req.body?.problem_owner ?? '').trim()
+    const category = String(req.body?.category ?? '未提取到监管码').trim()
     if (!reasonNote) return res.status(400).json({ error: '原因不能为空' })
     if (owner !== '客户' && owner !== '我方') {
       return res.status(400).json({ error: '问题归属只能是「客户」或「我方」' })
+    }
+    if (!canSetProblemOwner(category)) {
+      return res.status(400).json({ error: '该分类不支持问题归属' })
     }
     const [days] = await pool.query('SELECT id FROM acceptance_day WHERE id = ?', [req.params.id])
     if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
@@ -695,12 +708,13 @@ app.patch(
     const [r] = await pool.query(
       `UPDATE scan_record
        SET problem_owner = ?
-       WHERE category = '未提取到监管码'
+       WHERE category = ?
          AND reason_note = ?`,
-      [owner, reasonNote]
+      [owner, category, reasonNote]
     )
     await writeAudit(req, '按原因批量设置问题归属', {
       day_id: Number(req.params.id),
+      category,
       reason_note: reasonNote,
       problem_owner: owner,
       affected: r.affectedRows,
@@ -731,30 +745,31 @@ app.patch(
     ])
 
     let suggestedOwner = null
-    if (reasonNote && rows[0].category === '未提取到监管码') {
-      // 同分类同原因：跨日期取已有归属
+    const category = rows[0].category
+    if (reasonNote && canSetProblemOwner(category)) {
+      // 同分类同原因：跨日期取已有归属并同步
       const [peers] = await pool.query(
         `SELECT problem_owner FROM scan_record
-         WHERE category = '未提取到监管码'
+         WHERE category = ?
            AND reason_note = ?
            AND id <> ?
            AND problem_owner IN ('客户', '我方')
          ORDER BY id ASC LIMIT 1`,
-        [reasonNote, req.params.id]
+        [category, reasonNote, req.params.id]
       )
       if (peers.length) {
         suggestedOwner = peers[0].problem_owner
         await pool.query(
           `UPDATE scan_record SET problem_owner = ?
-           WHERE category = '未提取到监管码' AND reason_note = ?`,
-          [suggestedOwner, reasonNote]
+           WHERE category = ? AND reason_note = ?`,
+          [suggestedOwner, category, reasonNote]
         )
       }
     }
 
     await writeAudit(req, '填写原因', {
       record_id: Number(req.params.id),
-      category: rows[0].category,
+      category,
       reason_note: reasonNote || null,
     })
     res.json({
@@ -778,9 +793,10 @@ app.patch(
       [req.params.id]
     )
     if (rows.length === 0) return res.status(404).json({ error: '记录不存在' })
-    if (rows[0].category !== '未提取到监管码') {
-      return res.status(400).json({ error: '仅「未提取到监管码」可设置问题归属' })
+    if (!canSetProblemOwner(rows[0].category)) {
+      return res.status(400).json({ error: '仅「未提取到监管码」「海康无记录」可设置问题归属' })
     }
+    const category = rows[0].category
     const reasonNote = String(rows[0].reason_note || '').trim()
     let affected = 0
     if (reasonNote) {
@@ -788,9 +804,9 @@ app.patch(
       const [r] = await pool.query(
         `UPDATE scan_record
          SET problem_owner = ?
-         WHERE category = '未提取到监管码'
+         WHERE category = ?
            AND reason_note = ?`,
-        [owner, reasonNote]
+        [owner, category, reasonNote]
       )
       affected = r.affectedRows
     } else {
@@ -799,6 +815,7 @@ app.patch(
     }
     await writeAudit(req, '设置问题归属', {
       record_id: Number(req.params.id),
+      category,
       problem_owner: owner,
       affected,
       reason_note: reasonNote || null,

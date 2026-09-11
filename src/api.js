@@ -155,10 +155,10 @@ export const updateProblemOwner = (id, problem_owner) =>
     body: JSON.stringify({ problem_owner }),
   })
 
-export const updateProblemOwnerByReason = (dayId, reason_note, problem_owner) =>
+export const updateProblemOwnerByReason = (dayId, reason_note, problem_owner, category = '未提取到监管码') =>
   writeRequest(`/api/days/${dayId}/problem-owner-by-reason`, {
     method: 'PATCH',
-    body: JSON.stringify({ reason_note, problem_owner }),
+    body: JSON.stringify({ reason_note, problem_owner, category }),
   })
 
 export const uploadRemarkImage = async (id, file) => {

@@ -101,6 +101,7 @@ const MIGRATE_SQL = [
   `ALTER TABLE day_excel ADD COLUMN file_path VARCHAR(512) DEFAULT NULL`,
   `ALTER TABLE day_excel MODIFY COLUMN file_data LONGBLOB NULL`,
   `UPDATE scan_record SET problem_owner = '我方' WHERE category = '未提取到监管码' AND (problem_owner IS NULL OR problem_owner = '')`,
+  `UPDATE scan_record SET problem_owner = '我方' WHERE category = '海康无记录' AND (problem_owner IS NULL OR problem_owner = '')`,
   `UPDATE acceptance_day d
      SET source_type = 'detail'
      WHERE (source_type IS NULL OR source_type = '')

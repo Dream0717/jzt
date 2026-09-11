@@ -140,7 +140,9 @@ async function refreshRecords({ scrollTop = false } = {}) {
     records.value = data.records.map((r) => ({
       ...r,
       reason_note: r.reason_note || '',
-      problem_owner: r.problem_owner || (r.category === '未提取到监管码' ? '我方' : ''),
+      problem_owner:
+        r.problem_owner ||
+        (r.category === '未提取到监管码' || r.category === '海康无记录' ? '我方' : ''),
       has_remark_image: !!r.has_remark_image,
     }))
     total.value = data.total
@@ -314,17 +316,19 @@ async function queryReasonSuggestions(row, queryString, cb) {
   )
 }
 
+function canSetOwner(category) {
+  return category === '未提取到监管码' || category === '海康无记录'
+}
+
 function applyOwnerForReason(r, reason, owner) {
-  if (r.category !== '未提取到监管码') return
+  if (!canSetOwner(r.category)) return
   if (!owner || (owner !== '客户' && owner !== '我方')) return
   const note = String(reason || '').trim()
+  const cat = r.category
   r.problem_owner = owner
   if (!note) return
   for (const row of records.value) {
-    if (
-      row.category === '未提取到监管码' &&
-      String(row.reason_note || '').trim() === note
-    ) {
+    if (row.category === cat && String(row.reason_note || '').trim() === note) {
       row.problem_owner = owner
     }
   }
@@ -342,7 +346,10 @@ const showIssueColumns = computed(() => {
   return records.value.some((r) => r.category !== '空')
 })
 
-const showOwnerColumn = computed(() => activeCategory.value === '未提取到监管码')
+const showOwnerColumn = computed(
+  () =>
+    activeCategory.value === '未提取到监管码' || activeCategory.value === '海康无记录'
+)
 const showDingSaoLogBtn = computed(() => activeCategory.value === '海康无记录')
 
 function isIssueRecord(r) {
@@ -407,7 +414,7 @@ async function onReasonSelect(r, item) {
 
 const savingOwnerId = ref(null)
 async function saveOwner(r) {
-  if (r.category !== '未提取到监管码') return
+  if (!canSetOwner(r.category)) return
   savingOwnerId.value = r.id
   try {
     const data = await updateProblemOwner(r.id, r.problem_owner || '我方')
@@ -420,7 +427,7 @@ async function saveOwner(r) {
         ElMessage.success(`已同步 ${data.affected} 条相同原因的问题归属`)
       }
     }
-    await refreshReasonOptions('未提取到监管码')
+    await refreshReasonOptions(r.category)
   } catch (e) {
     if (isAuthCancelled(e)) return
     ElMessage.error(e.message)
