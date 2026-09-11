@@ -109,6 +109,7 @@ async function doLogout() {
   background: #1f3a5f;
   color: #fff;
   padding: 12px 24px;
+  flex-shrink: 0;
 }
 .app-header-inner {
   display: flex;

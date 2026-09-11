@@ -119,9 +119,10 @@ async function refreshRecords({ scrollTop = false } = {}) {
 }
 
 function scrollListToTop() {
-  if (tableWrap.value) tableWrap.value.scrollTop = 0
-  const anchor = tableWrap.value?.closest('.page-card') || tableWrap.value
-  anchor?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  if (tableWrap.value) {
+    tableWrap.value.scrollTop = 0
+    // 横向位置保持不变，仅纵向回顶
+  }
 }
 
 function switchCategory(cat) {
@@ -458,52 +459,14 @@ watch(page, (p) => {
 })
 
 const tableWrap = ref(null)
-const hScrollTop = ref(null)
-const tableScrollWidth = ref(0)
-let syncingScroll = false
-let resizeObs = null
-
-function syncTableWidth() {
-  const el = tableWrap.value
-  if (!el) return
-  tableScrollWidth.value = el.scrollWidth
-}
-
-function onTopScroll() {
-  if (syncingScroll || !tableWrap.value || !hScrollTop.value) return
-  syncingScroll = true
-  tableWrap.value.scrollLeft = hScrollTop.value.scrollLeft
-  syncingScroll = false
-}
-
-function onTableScroll() {
-  if (syncingScroll || !tableWrap.value || !hScrollTop.value) return
-  syncingScroll = true
-  hScrollTop.value.scrollLeft = tableWrap.value.scrollLeft
-  syncingScroll = false
-}
 
 onMounted(async () => {
   await refreshBase()
   await refreshRecords()
-  await nextTick()
-  syncTableWidth()
-  if (tableWrap.value && typeof ResizeObserver !== 'undefined') {
-    resizeObs = new ResizeObserver(() => syncTableWidth())
-    resizeObs.observe(tableWrap.value)
-    const table = tableWrap.value.querySelector('table')
-    if (table) resizeObs.observe(table)
-  }
 })
 
 onBeforeUnmount(() => {
   clearTimeout(searchTimer)
-  resizeObs?.disconnect()
-})
-
-watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
-  await nextTick()
-  syncTableWidth()
 })
 </script>
 
@@ -523,7 +486,7 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
       </label>
     </div>
 
-    <el-card shadow="never" class="page-card">
+    <el-card shadow="never" class="page-card import-card">
       <div class="import-bar">
         <input
           ref="importInputRef"
@@ -538,7 +501,13 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
       </div>
     </el-card>
 
-    <el-card v-if="stats.length" shadow="never" class="page-card" v-loading="loadingRecords">
+    <el-card
+      v-if="stats.length"
+      shadow="never"
+      class="page-card records-card"
+      v-loading="loadingRecords"
+    >
+      <div class="records-toolbar">
       <div class="cat-tabs">
         <el-check-tag :checked="activeCategory === ''" @click="switchCategory('')">
           全部 {{ totalCount }}
@@ -572,17 +541,9 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
           </el-button>
         </template>
       </div>
-
-      <div
-        v-show="tableScrollWidth > 0"
-        ref="hScrollTop"
-        class="hscroll-top"
-        @scroll="onTopScroll"
-      >
-        <div class="hscroll-spacer" :style="{ width: tableScrollWidth + 'px' }"></div>
       </div>
 
-      <div ref="tableWrap" class="table-wrap" @scroll="onTableScroll">
+      <div ref="tableWrap" class="table-wrap">
         <table class="rec-table">
           <thead>
             <tr>
@@ -739,7 +700,7 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
       </div>
     </el-card>
 
-    <el-empty v-else description="该日期还没有数据，点击上方导入统计明细" />
+    <el-empty v-else class="page-empty" description="该日期还没有数据，点击上方导入统计明细" />
 
     <el-dialog
       v-model="previewVisible"
@@ -777,12 +738,21 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 </template>
 
 <style scoped>
+.page {
+  flex: 1;
+  min-height: 0;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  gap: 10px;
+}
 .nav-back {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 16px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .day-title {
   font-size: 16px;
@@ -803,6 +773,13 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   cursor: pointer;
   user-select: none;
 }
+.import-card {
+  flex-shrink: 0;
+  margin-bottom: 0 !important;
+}
+.import-card :deep(.el-card__body) {
+  padding: 12px 16px;
+}
 .import-bar {
   display: flex;
   align-items: center;
@@ -812,38 +789,42 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 .hidden-file {
   display: none;
 }
+.records-card {
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0 !important;
+  display: flex;
+  flex-direction: column;
+}
+.records-card :deep(.el-card__body) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 12px 16px;
+}
+.records-toolbar {
+  flex-shrink: 0;
+}
 .cat-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 .search-bar {
   display: flex;
   gap: 10px;
-  margin-bottom: 12px;
-}
-.hscroll-top {
-  overflow-x: auto;
-  overflow-y: hidden;
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  height: 12px;
-  margin-bottom: 4px;
-  background: #fff;
-}
-.hscroll-spacer {
-  height: 1px;
+  margin-bottom: 10px;
 }
 .table-wrap {
-  overflow-x: auto;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
-  scrollbar-width: none;
-}
-.table-wrap::-webkit-scrollbar {
-  height: 0;
+  background: #fff;
 }
 .rec-table {
   width: max-content;
@@ -863,8 +844,11 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   color: #606266;
   font-weight: 600;
   position: sticky;
-  top: 12px;
-  z-index: 1;
+  top: 0;
+  z-index: 2;
+}
+.page-empty {
+  flex: 1;
 }
 .td-center {
   text-align: center;
@@ -948,7 +932,8 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 12px;
-  margin-top: 12px;
+  margin-top: 10px;
+  flex-shrink: 0;
 }
 .pager-jump {
   display: inline-flex;

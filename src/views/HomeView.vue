@@ -93,6 +93,11 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+.page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
 .toolbar {
   display: flex;
   gap: 12px;
