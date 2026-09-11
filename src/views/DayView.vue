@@ -7,6 +7,7 @@ import {
   importXls,
   getStats,
   listRecords,
+  listDays,
   getReasonOptions,
   updateRecordReason,
   updateProblemOwner,
@@ -16,8 +17,8 @@ import {
   matchDingSaoLog,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
-import { isDingSaoRateEnabled, setDingSaoRateEnabled, calcScanRatePercent } from '../scanRateMode.js'
-import { categoryTagStyle, categoryTabStyle } from '../categoryColors.js'
+import { isDingSaoRateEnabled, setDingSaoRateEnabled, turnOffDingSaoRate, calcScanRatePercent } from '../scanRateMode.js'
+import { categoryTagStyle, categoryTabStyle, categoryRowVars } from '../categoryColors.js'
 import { rememberOpenedDay } from '../dayHighlight.js'
 
 const props = defineProps({ dayId: String })
@@ -59,10 +60,36 @@ let dragOriginX = 0
 let dragOriginY = 0
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-const includeDingSaoInRate = computed({
-  get: () => isDingSaoRateEnabled(props.dayId),
-  set: (on) => setDingSaoRateEnabled(props.dayId, on),
-})
+const includeDingSaoInRate = computed(() => isDingSaoRateEnabled(props.dayId))
+
+async function onDingSaoRateChange(on) {
+  if (on) {
+    setDingSaoRateEnabled(props.dayId, true)
+    return
+  }
+  const cityId = day.value?.city_id
+  if (!cityId) {
+    setDingSaoRateEnabled(props.dayId, false)
+    return
+  }
+  try {
+    const data = await listDays(cityId)
+    const ids = (data.days || [])
+      .filter((d) => {
+        if (d.source_type === 'excel') return false
+        if (d.source_type === 'detail') return true
+        return (d.record_count || 0) > 0
+      })
+      .map((d) => d.id)
+    turnOffDingSaoRate(props.dayId, ids)
+  } catch {
+    setDingSaoRateEnabled(props.dayId, false)
+  }
+}
+
+function rowStyleOf(r) {
+  return categoryRowVars(r.category) || undefined
+}
 
 const scanRateText = computed(() => {
   if (!(scanRate.value.total > 0)) return ''
@@ -522,7 +549,7 @@ onBeforeUnmount(() => {
         </span>
       </span>
       <label v-if="scanRate.total" class="rate-mode-switch" :title="scanRateTitle">
-        <el-switch v-model="includeDingSaoInRate" />
+        <el-switch :model-value="includeDingSaoInRate" @change="onDingSaoRateChange" />
         <span>算上海康无记录的读码率</span>
       </label>
     </div>
@@ -615,10 +642,12 @@ onBeforeUnmount(() => {
               v-for="r in records"
               :key="r.id"
               :class="{
+                'row-has-cat': r.category && r.category !== '空',
                 'row-copied': copiedId === r.id,
                 'row-our-problem': r.problem_owner === '我方',
                 'row-ding-sao-found': String(r.reason_note || '').trim() === '顶扫有记录',
               }"
+              :style="rowStyleOf(r)"
             >
               <td>{{ r.doc_no }}</td>
               <td>
@@ -941,9 +970,15 @@ onBeforeUnmount(() => {
 .serial-copy .copy-icon {
   margin-left: 4px;
 }
+.rec-table tbody tr.row-has-cat td {
+  background: var(--row-cat-bg);
+  color: var(--row-cat-fg);
+  box-shadow: inset 3px 0 0 var(--row-cat-bar);
+}
 .rec-table tbody tr.row-our-problem td {
   background: #fef0f0;
   color: #c45656;
+  box-shadow: none;
 }
 .rec-table tbody tr.row-ding-sao-found td {
   background: #fff3bf;
@@ -953,6 +988,11 @@ onBeforeUnmount(() => {
 .rec-table tbody tr.row-copied td {
   background: #ecf5ff;
   box-shadow: inset 0 0 0 2px var(--el-color-primary);
+}
+.rec-table tbody tr.row-has-cat.row-copied:not(.row-our-problem):not(.row-ding-sao-found) td {
+  background: var(--row-cat-bg);
+  color: var(--row-cat-fg);
+  box-shadow: inset 3px 0 0 var(--row-cat-bar), inset 0 0 0 2px var(--el-color-primary);
 }
 .rec-table tbody tr.row-our-problem.row-copied td {
   background: #fde2e2;

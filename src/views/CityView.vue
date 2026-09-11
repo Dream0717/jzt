@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -14,7 +14,7 @@ import {
   importSplitXls,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
-import { isDingSaoRateEnabled, calcScanRatePercent, dingSaoRateByDay } from '../scanRateMode.js'
+import { isDingSaoRateEnabled, calcScanRatePercent, dingSaoRateByDay, isCityDingSaoRateEnabled, setCityDingSaoRateEnabled } from '../scanRateMode.js'
 import { categoryTagStyle } from '../categoryColors.js'
 import { getOpenedDayId } from '../dayHighlight.js'
 
@@ -183,6 +183,31 @@ function scanRateOf(d) {
   )
   return pct == null ? '—' : `${pct.toFixed(2)}%`
 }
+
+/** 当前城市下可参与「算上海康」的日期（验收明细） */
+const detailDayIds = computed(() =>
+  (days.value || [])
+    .filter((d) => {
+      if (d.source_type === 'excel') return false
+      if (d.source_type === 'detail') return true
+      return (d.record_count || 0) > 0
+    })
+    .map((d) => d.id)
+)
+
+const cityDingSaoRate = computed({
+  get: () => {
+    // 依赖 reactive map，保证开关联动
+    for (const id of detailDayIds.value) void dingSaoRateByDay[String(id)]
+    return isCityDingSaoRateEnabled(detailDayIds.value)
+  },
+  set: (on) => {
+    setCityDingSaoRateEnabled(detailDayIds.value, !!on)
+  },
+})
+
+const cityDingSaoTitle =
+  '开启后，本城市所有验收明细日期均按「算上海康无记录」计算读码率；若在某一明细中关掉，则本城市全部日期一并关闭'
 
 async function saveManualRate(day) {
   const value = String(rateDrafts.value[day.id] ?? '').trim()
@@ -446,7 +471,17 @@ onMounted(refresh)
 
     <el-card shadow="never" class="page-card">
       <div class="toolbar">
-        <span class="toolbar-label">日期文件夹（{{ days.length }}）</span>
+        <div class="toolbar-left">
+          <span class="toolbar-label">日期文件夹（{{ days.length }}）</span>
+          <label
+            v-if="detailDayIds.length"
+            class="rate-mode-switch"
+            :title="cityDingSaoTitle"
+          >
+            <el-switch v-model="cityDingSaoRate" />
+            <span>算上海康无记录的读码率（本城市全部）</span>
+          </label>
+        </div>
         <div class="toolbar-actions">
           <el-button type="success" :loading="splitting" @click="startSplitImport">
             按日期拆分导入（可多选）
@@ -620,6 +655,13 @@ onMounted(refresh)
   gap: 12px;
   flex-wrap: wrap;
 }
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
 .toolbar-actions {
   display: flex;
   gap: 8px;
@@ -628,6 +670,16 @@ onMounted(refresh)
 .toolbar-label {
   font-size: 15px;
   font-weight: 600;
+}
+.rate-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+  user-select: none;
 }
 .day-col {
   display: flex;

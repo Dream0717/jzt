@@ -76,3 +76,15 @@ export function categoryTabStyle(category, checked) {
     borderColor: c.border,
   }
 }
+
+/** 整行配色用 CSS 变量（「空」不着色） */
+export function categoryRowVars(category) {
+  const cat = String(category || '').trim()
+  if (!cat || cat === '空') return null
+  const c = categoryColor(cat)
+  return {
+    '--row-cat-bg': c.bg,
+    '--row-cat-fg': c.text,
+    '--row-cat-bar': c.border,
+  }
+}
