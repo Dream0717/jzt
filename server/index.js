@@ -66,12 +66,30 @@ async function insertScanRecords(conn, dayId, records) {
   }
 }
 
-/** 读码率 = (总数 − 未提取到监管码且归属我方) ÷ 总数 × 100，保留两位小数 */
-function buildScanRate(totalRaw, ourMissRaw) {
+/** 读码率 = (总数 − 未提取到监管码且归属我方) ÷ 总数 × 100，保留两位小数
+ *  percent_with_ding_sao 另扣「海康无记录 + 顶扫有记录」
+ */
+function buildScanRate(totalRaw, ourMissRaw, dingSaoFoundRaw = 0) {
   const total = Number(totalRaw) || 0
   const our_miss_count = Number(ourMissRaw) || 0
+  const ding_sao_found_count = Number(dingSaoFoundRaw) || 0
   const percent = total > 0 ? Number((((total - our_miss_count) / total) * 100).toFixed(2)) : 0
-  return { total, our_miss_count, percent }
+  const percent_with_ding_sao =
+    total > 0
+      ? Number((((total - our_miss_count - ding_sao_found_count) / total) * 100).toFixed(2))
+      : 0
+  return { total, our_miss_count, ding_sao_found_count, percent, percent_with_ding_sao }
+}
+
+async function queryDayScanRate(dayId, conn = pool) {
+  const [[rate]] = await conn.query(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count,
+            SUM(CASE WHEN category = '海康无记录' AND TRIM(reason_note) = '顶扫有记录' THEN 1 ELSE 0 END) AS ding_sao_found_count
+     FROM scan_record WHERE day_id = ?`,
+    [dayId]
+  )
+  return buildScanRate(rate.total, rate.our_miss_count, rate.ding_sao_found_count)
 }
 
 // ---------- 登录 ----------
@@ -236,15 +254,9 @@ app.get(
       [req.params.id]
     )
     if (rows.length === 0) return res.status(404).json({ error: '日期不存在' })
-    const [[rate]] = await pool.query(
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count
-       FROM scan_record WHERE day_id = ?`,
-      [req.params.id]
-    )
     res.json({
       day: rows[0],
-      scan_rate: buildScanRate(rate.total, rate.our_miss_count),
+      scan_rate: await queryDayScanRate(req.params.id),
     })
   })
 )
@@ -443,8 +455,25 @@ app.get(
     }
     if (keyword) {
       const kw = `%${keyword}%`
-      where.push('(goods_name LIKE ? OR drug_code LIKE ? OR doc_no LIKE ? OR operator LIKE ?)')
-      params.push(kw, kw, kw, kw)
+      where.push(`(
+        COALESCE(NULLIF(doc_no, ''), doc_head_id) LIKE ?
+        OR doc_head_id LIKE ?
+        OR doc_no LIKE ?
+        OR serial_no LIKE ?
+        OR goods_name LIKE ?
+        OR goods_no LIKE ?
+        OR goods_inner_no LIKE ?
+        OR spec LIKE ?
+        OR manufacturer LIKE ?
+        OR drug_code LIKE ?
+        OR operator LIKE ?
+        OR category LIKE ?
+        OR raw_reason LIKE ?
+        OR reason_note LIKE ?
+        OR problem_owner LIKE ?
+        OR CAST(op_time AS CHAR) LIKE ?
+      )`)
+      params.push(kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw)
     }
     const whereSql = where.join(' AND ')
     const limit = Math.min(Number(pageSize) || 50, 500)
@@ -520,17 +549,11 @@ app.patch(
          AND reason_note = ?`,
       [owner, req.params.id, reasonNote]
     )
-    const [[rate]] = await pool.query(
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count
-       FROM scan_record WHERE day_id = ?`,
-      [req.params.id]
-    )
     res.json({
       ok: true,
       affected: r.affectedRows,
       problem_owner: owner,
-      scan_rate: buildScanRate(rate.total, rate.our_miss_count),
+      scan_rate: await queryDayScanRate(req.params.id),
     })
   })
 )
@@ -608,18 +631,12 @@ app.patch(
       await pool.query('UPDATE scan_record SET problem_owner = ? WHERE id = ?', [owner, req.params.id])
       affected = 1
     }
-    const [[rate]] = await pool.query(
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count
-       FROM scan_record WHERE day_id = ?`,
-      [rows[0].day_id]
-    )
     res.json({
       ok: true,
       problem_owner: owner,
       affected,
       reason_note: reasonNote || null,
-      scan_rate: buildScanRate(rate.total, rate.our_miss_count),
+      scan_rate: await queryDayScanRate(rows[0].day_id),
     })
   })
 )
@@ -691,6 +708,7 @@ app.post(
       missing: missingIds.length,
       skipped,
       message: `已处理 ${rows.length} 条：顶扫有记录 ${foundIds.length}，顶扫无记录 ${missingIds.length}`,
+      scan_rate: await queryDayScanRate(req.params.id),
     })
   })
 )

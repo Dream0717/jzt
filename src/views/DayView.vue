@@ -21,10 +21,18 @@ const props = defineProps({ dayId: String })
 const router = useRouter()
 
 const day = ref(null)
-const scanRate = ref({ total: 0, our_miss_count: 0, percent: 0 })
+const scanRate = ref({
+  total: 0,
+  our_miss_count: 0,
+  ding_sao_found_count: 0,
+  percent: 0,
+  percent_with_ding_sao: 0,
+})
+const includeDingSaoInRate = ref(false)
 const stats = ref([])
 const activeCategory = ref('')
 const keyword = ref('')
+let searchTimer = null
 const records = ref([])
 const total = ref(0)
 const page = ref(1)
@@ -51,7 +59,17 @@ let dragOriginY = 0
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 const scanRateText = computed(() => {
   if (!(scanRate.value.total > 0)) return ''
-  return `${Number(scanRate.value.percent).toFixed(2)}%`
+  const pct = includeDingSaoInRate.value
+    ? scanRate.value.percent_with_ding_sao
+    : scanRate.value.percent
+  return `${Number(pct ?? 0).toFixed(2)}%`
+})
+
+const scanRateTitle = computed(() => {
+  if (includeDingSaoInRate.value) {
+    return '读码率 = (全部 − 未提取到监管码·我方 − 海康无记录·顶扫有记录) ÷ 全部 × 100%'
+  }
+  return '读码率 = (全部 − 未提取到监管码·我方) ÷ 全部 × 100%'
 })
 
 async function refreshBase() {
@@ -116,6 +134,17 @@ function doSearch() {
   page.value = 1
   refreshRecords({ scrollTop: true })
 }
+
+function scheduleSearch() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    doSearch()
+  }, 280)
+}
+
+watch(keyword, () => {
+  scheduleSearch()
+})
 
 function changePageSize() {
   page.value = 1
@@ -266,6 +295,7 @@ async function onDingSaoLogChange(ev) {
       r.message ||
         `顶扫有记录 ${r.found || 0}，顶扫无记录 ${r.missing || 0}`
     )
+    if (r.scan_rate) scanRate.value = r.scan_rate
     await loadReasonOptions()
     await refreshRecords()
   } catch (e) {
@@ -467,6 +497,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  clearTimeout(searchTimer)
   resizeObs?.disconnect()
 })
 
@@ -482,10 +513,14 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
       <el-button @click="router.push(`/city/${day.city_id}`)">← 返回日期列表</el-button>
       <span class="day-title">
         {{ day.city_name }} · {{ day.day_date }}
-        <span v-if="scanRate.total" class="scan-rate" title="读码率 = (总数 − 我方问题) ÷ 总数 × 100%">
+        <span v-if="scanRate.total" class="scan-rate" :title="scanRateTitle">
           读码率 <em>{{ scanRateText }}</em>
         </span>
       </span>
+      <label v-if="scanRate.total" class="rate-mode-switch" :title="scanRateTitle">
+        <el-switch v-model="includeDingSaoInRate" />
+        <span>算上海康无记录的读码率</span>
+      </label>
     </div>
 
     <el-card shadow="never" class="page-card">
@@ -522,10 +557,8 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
         <el-input
           v-model="keyword"
           clearable
-          placeholder="按 商品名称 / 监管码 / 单据编号 / 操作员 搜索"
-          @keyup.enter="doSearch"
+          placeholder="实时搜索：流水号 / 监管码 / 商品 / 原因 / 操作员 / 归属…（全部列）"
         />
-        <el-button type="primary" @click="doSearch">搜索</el-button>
         <template v-if="showDingSaoLogBtn">
           <input
             ref="dingSaoInputRef"
@@ -758,6 +791,17 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   align-items: center;
   flex-wrap: wrap;
   gap: 4px;
+}
+.rate-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+  user-select: none;
 }
 .import-bar {
   display: flex;
