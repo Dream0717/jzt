@@ -17,6 +17,8 @@ import {
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
 import { isDingSaoRateEnabled, setDingSaoRateEnabled, calcScanRatePercent } from '../scanRateMode.js'
+import { categoryTagStyle, categoryTabStyle } from '../categoryColors.js'
+import { rememberOpenedDay } from '../dayHighlight.js'
 
 const props = defineProps({ dayId: String })
 const router = useRouter()
@@ -91,7 +93,8 @@ async function refreshBase() {
     }
     scanRate.value = d.scan_rate || { total: 0, our_miss_count: 0, percent: 0 }
     stats.value = s.stats
-    await loadReasonOptions()
+    rememberOpenedDay(props.dayId)
+    await preloadReasonOptions()
   } catch (e) {
     ElMessage.error(e.message)
   }
@@ -240,22 +243,48 @@ async function copySerial(r) {
   ElMessage.success({ message: '已复制条码流水号', duration: 1000 })
 }
 
-const reasonOptions = ref([])
-async function loadReasonOptions() {
+const reasonOptionsByCat = ref({})
+
+async function ensureReasonOptions(category) {
+  const cat = String(category || '').trim()
+  if (!cat || cat === '空') return []
+  if (reasonOptionsByCat.value[cat]) return reasonOptionsByCat.value[cat]
   try {
-    const data = await getReasonOptions(props.dayId)
-    reasonOptions.value = data.options || []
+    const data = await getReasonOptions(cat)
+    const list = data.options || []
+    reasonOptionsByCat.value = { ...reasonOptionsByCat.value, [cat]: list }
+    return list
   } catch {
-    reasonOptions.value = []
+    return []
   }
 }
 
-function queryReasonSuggestions(queryString, cb) {
+async function preloadReasonOptions() {
+  const cats = (stats.value || [])
+    .map((s) => s.category)
+    .filter((c) => c && c !== '空')
+  await Promise.all(cats.map((c) => ensureReasonOptions(c)))
+}
+
+async function refreshReasonOptions(category) {
+  const cat = String(category || '').trim()
+  if (!cat || cat === '空') return
+  try {
+    const data = await getReasonOptions(cat)
+    reasonOptionsByCat.value = { ...reasonOptionsByCat.value, [cat]: data.options || [] }
+  } catch {
+    // keep cache
+  }
+}
+
+async function queryReasonSuggestions(row, queryString, cb) {
+  const list = await ensureReasonOptions(row?.category)
   const q = String(queryString || '').trim()
-  const list = (reasonOptions.value || [])
-    .filter((o) => !q || String(o.value || '').includes(q))
-    .map((o) => ({ value: o.value, problem_owner: o.problem_owner }))
-  cb(list)
+  cb(
+    (list || [])
+      .filter((o) => !q || String(o.value || '').includes(q))
+      .map((o) => ({ value: o.value, problem_owner: o.problem_owner }))
+  )
 }
 
 function applyOwnerForReason(r, reason, owner) {
@@ -272,6 +301,10 @@ function applyOwnerForReason(r, reason, owner) {
       row.problem_owner = owner
     }
   }
+}
+
+function reasonNeedsTooltip(text) {
+  return String(text || '').trim().length > 10
 }
 
 const totalCount = computed(() => stats.value.reduce((a, s) => a + s.count, 0))
@@ -305,7 +338,7 @@ async function onDingSaoLogChange(ev) {
         `顶扫有记录 ${r.found || 0}，顶扫无记录 ${r.missing || 0}`
     )
     if (r.scan_rate) scanRate.value = r.scan_rate
-    await loadReasonOptions()
+    await refreshReasonOptions('海康无记录')
     await refreshRecords()
   } catch (e) {
     if (isAuthCancelled(e)) return
@@ -328,7 +361,7 @@ async function saveReason(r) {
       const dayData = await getDay(props.dayId)
       if (dayData.scan_rate) scanRate.value = dayData.scan_rate
     }
-    await loadReasonOptions()
+    await refreshReasonOptions(r.category)
   } catch (e) {
     if (isAuthCancelled(e)) return
     ElMessage.error(e.message)
@@ -360,7 +393,7 @@ async function saveOwner(r) {
         ElMessage.success(`已同步 ${data.affected} 条相同原因的问题归属`)
       }
     }
-    await loadReasonOptions()
+    await refreshReasonOptions('未提取到监管码')
   } catch (e) {
     if (isAuthCancelled(e)) return
     ElMessage.error(e.message)
@@ -523,6 +556,9 @@ onBeforeUnmount(() => {
         <el-check-tag
           v-for="s in stats"
           :key="s.category"
+          class="cat-tab"
+          :class="{ 'is-empty-cat': s.category === '空' }"
+          :style="s.category === '空' ? undefined : categoryTabStyle(s.category, activeCategory === s.category)"
           :checked="activeCategory === s.category"
           @click="switchCategory(s.category)"
         >
@@ -605,7 +641,20 @@ onBeforeUnmount(() => {
               <td>{{ r.operator }}</td>
               <td class="mono">{{ fmtTime(r.op_time) }}</td>
               <td>
-                <el-tag :type="r.category === '空' ? 'success' : 'warning'" size="small">
+                <el-tag
+                  v-if="r.category === '空'"
+                  type="success"
+                  size="small"
+                  effect="light"
+                >
+                  {{ r.category }}
+                </el-tag>
+                <el-tag
+                  v-else
+                  size="small"
+                  effect="plain"
+                  :style="categoryTagStyle(r.category)"
+                >
                   {{ r.category }}
                 </el-tag>
               </td>
@@ -622,19 +671,26 @@ onBeforeUnmount(() => {
                 </el-select>
               </td>
               <td v-if="showIssueColumns" class="td-reason">
-                <el-autocomplete
+                <el-tooltip
                   v-if="isIssueRecord(r)"
-                  v-model="r.reason_note"
-                  size="small"
-                  placeholder="填写原因说明"
-                  maxlength="512"
-                  :fetch-suggestions="queryReasonSuggestions"
-                  :disabled="savingReasonId === r.id"
-                  style="width: 100%"
-                  value-key="value"
-                  @select="(item) => onReasonSelect(r, item)"
-                  @blur="saveReason(r)"
-                />
+                  :disabled="!reasonNeedsTooltip(r.reason_note)"
+                  :content="r.reason_note"
+                  placement="top"
+                  :show-after="350"
+                >
+                  <el-autocomplete
+                    v-model="r.reason_note"
+                    size="small"
+                    placeholder="填写原因说明"
+                    maxlength="512"
+                    :fetch-suggestions="(q, cb) => queryReasonSuggestions(r, q, cb)"
+                    :disabled="savingReasonId === r.id"
+                    style="width: 100%"
+                    value-key="value"
+                    @select="(item) => onReasonSelect(r, item)"
+                    @blur="saveReason(r)"
+                  />
+                </el-tooltip>
                 <span v-else class="muted">—</span>
               </td>
               <td v-if="showIssueColumns" class="td-remark">
@@ -821,6 +877,13 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 10px;
+}
+.cat-tabs :deep(.cat-tab.el-check-tag) {
+  border: 1px solid transparent;
+  transition: box-shadow 0.15s ease;
+}
+.cat-tabs :deep(.cat-tab.el-check-tag.is-checked) {
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06);
 }
 .search-bar {
   display: flex;

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -15,6 +15,8 @@ import {
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
 import { isDingSaoRateEnabled, calcScanRatePercent, dingSaoRateByDay } from '../scanRateMode.js'
+import { categoryTagStyle } from '../categoryColors.js'
+import { getOpenedDayId } from '../dayHighlight.js'
 
 const props = defineProps({ cityId: String })
 const router = useRouter()
@@ -26,6 +28,7 @@ const newDate = ref('')
 const newSourceType = ref('detail')
 const creating = ref(false)
 const importingDayId = ref(null)
+const highlightDayId = ref('')
 
 const showExcelPanel = ref(false)
 const excelDay = ref(null)
@@ -65,11 +68,37 @@ async function refresh() {
     }
     rateDrafts.value = drafts
     document.title = `${cityName.value} - 日期文件夹`
+    highlightDayId.value = getOpenedDayId()
+    await nextTick()
+    scrollHighlightIntoView()
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
     loading.value = false
   }
+}
+
+function dayCategories(d) {
+  if (Array.isArray(d?.categories) && d.categories.length) {
+    return d.categories.filter(Boolean)
+  }
+  return []
+}
+
+function categoryTooltip(d) {
+  const cats = dayCategories(d)
+  if (!cats.length) return '暂无分类'
+  return `包含分类：${cats.join('、')}`
+}
+
+function scrollHighlightIntoView() {
+  if (!highlightDayId.value) return
+  const el = document.querySelector(`[data-day-id="${highlightDayId.value}"]`)
+  if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+}
+
+function goDayDetail(d) {
+  router.push(`/day/${d.id}`)
 }
 
 function openAdd() {
@@ -379,7 +408,7 @@ function openDay(d) {
     else startImportExcel(d)
     return
   }
-  router.push(`/day/${d.id}`)
+  goDayDetail(d)
 }
 
 onMounted(refresh)
@@ -430,70 +459,94 @@ onMounted(refresh)
     <el-empty v-if="!loading && days.length === 0" description="还没有日期文件夹，点击右上角「添加日期」创建" />
     <el-row v-else :gutter="16" class="day-grid">
       <el-col v-for="d in days" :key="d.id" :xs="24" :sm="12" :md="8" :lg="6" class="day-col">
-        <el-card shadow="hover" class="day-card">
-          <div class="day-date" @click="openDay(d)">{{ d.day_date }}</div>
-          <div class="day-week">{{ fmtWeek(d.day_date) }}</div>
+        <el-tooltip
+          :disabled="dayMode(d) !== 'detail' || !(d.record_count > 0)"
+          placement="top"
+          :show-after="250"
+        >
+          <template #content>
+            <div class="cat-tip">
+              <div class="cat-tip-title">{{ categoryTooltip(d) }}</div>
+              <div v-if="dayCategories(d).length" class="cat-tip-tags">
+                <span
+                  v-for="c in dayCategories(d)"
+                  :key="c"
+                  class="cat-tip-tag"
+                  :style="categoryTagStyle(c)"
+                >{{ c }}</span>
+              </div>
+            </div>
+          </template>
+          <el-card
+            shadow="hover"
+            class="day-card"
+            :class="{ 'day-card-active': String(highlightDayId) === String(d.id) }"
+            :data-day-id="d.id"
+          >
+            <div class="day-date" @click="openDay(d)">{{ d.day_date }}</div>
+            <div class="day-week">{{ fmtWeek(d.day_date) }}</div>
 
-          <div class="day-meta">
-            <div class="meta-tag">
-              <el-tag v-if="dayMode(d) === 'detail'" size="small" type="primary">验收明细</el-tag>
-              <el-tag v-else-if="dayMode(d) === 'excel'" size="small" type="success">Excel</el-tag>
-              <el-tag v-else size="small" type="info">未指定</el-tag>
+            <div class="day-meta">
+              <div class="meta-tag">
+                <el-tag v-if="dayMode(d) === 'detail'" size="small" type="primary">验收明细</el-tag>
+                <el-tag v-else-if="dayMode(d) === 'excel'" size="small" type="success">Excel</el-tag>
+                <el-tag v-else size="small" type="info">未指定</el-tag>
+              </div>
+
+              <div class="meta-status">
+                <template v-if="dayMode(d) === 'detail'">
+                  <template v-if="d.record_count > 0">{{ d.record_count }} 条 · {{ d.category_count || 0 }} 类</template>
+                  <span v-else class="muted">尚未导入验收明细</span>
+                </template>
+                <template v-else-if="dayMode(d) === 'excel'">
+                  <template v-if="d.excel_count > 0">已导入 Excel</template>
+                  <span v-else class="muted">尚未导入 Excel</span>
+                </template>
+                <span v-else class="muted">—</span>
+              </div>
+
+              <div class="meta-rate">
+                <template v-if="dayMode(d) === 'detail'">
+                  <span class="scan-rate">读码率 <em>{{ d.record_count > 0 ? scanRateOf(d) : '—' }}</em></span>
+                </template>
+                <template v-else-if="dayMode(d) === 'excel'">
+                  <div class="manual-rate">
+                    <span>读码率</span>
+                    <el-input
+                      v-model="rateDrafts[d.id]"
+                      size="small"
+                      placeholder="如 98.50%"
+                      @change="saveManualRate(d)"
+                    />
+                  </div>
+                </template>
+                <span v-else class="muted">读码率 —</span>
+              </div>
             </div>
 
-            <div class="meta-status">
+            <div class="day-actions">
               <template v-if="dayMode(d) === 'detail'">
-                <template v-if="d.record_count > 0">{{ d.record_count }} 条 · {{ d.category_count || 0 }} 类</template>
-                <span v-else class="muted">尚未导入验收明细</span>
+                <el-button size="small" type="primary" @click="goDayDetail(d)">
+                  验收明细
+                </el-button>
               </template>
               <template v-else-if="dayMode(d) === 'excel'">
-                <template v-if="d.excel_count > 0">已导入 Excel</template>
-                <span v-else class="muted">尚未导入 Excel</span>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="importingDayId === d.id"
+                  @click="startImportExcel(d)"
+                >
+                  导入Excel
+                </el-button>
+                <el-button v-if="d.excel_count > 0" size="small" @click="openExcelPanel(d)">
+                  打开Excel
+                </el-button>
               </template>
-              <span v-else class="muted">—</span>
+              <el-button size="small" type="danger" plain @click="removeDay(d)">删除</el-button>
             </div>
-
-            <div class="meta-rate">
-              <template v-if="dayMode(d) === 'detail'">
-                <span class="scan-rate">读码率 <em>{{ d.record_count > 0 ? scanRateOf(d) : '—' }}</em></span>
-              </template>
-              <template v-else-if="dayMode(d) === 'excel'">
-                <div class="manual-rate">
-                  <span>读码率</span>
-                  <el-input
-                    v-model="rateDrafts[d.id]"
-                    size="small"
-                    placeholder="如 98.50%"
-                    @change="saveManualRate(d)"
-                  />
-                </div>
-              </template>
-              <span v-else class="muted">读码率 —</span>
-            </div>
-          </div>
-
-          <div class="day-actions">
-            <template v-if="dayMode(d) === 'detail'">
-              <el-button size="small" type="primary" @click="router.push(`/day/${d.id}`)">
-                验收明细
-              </el-button>
-            </template>
-            <template v-else-if="dayMode(d) === 'excel'">
-              <el-button
-                size="small"
-                type="primary"
-                :loading="importingDayId === d.id"
-                @click="startImportExcel(d)"
-              >
-                导入Excel
-              </el-button>
-              <el-button v-if="d.excel_count > 0" size="small" @click="openExcelPanel(d)">
-                打开Excel
-              </el-button>
-            </template>
-            <el-button size="small" type="danger" plain @click="removeDay(d)">删除</el-button>
-          </div>
-        </el-card>
+          </el-card>
+        </el-tooltip>
       </el-col>
     </el-row>
 
@@ -586,6 +639,12 @@ onMounted(refresh)
   text-align: center;
   display: flex;
   flex-direction: column;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+.day-card-active {
+  border: 2px solid var(--el-color-primary) !important;
+  box-shadow: 0 0 0 3px var(--el-color-primary-light-7), 0 8px 20px rgba(31, 58, 95, 0.12);
+  transform: translateY(-2px);
 }
 .day-card :deep(.el-card__body) {
   flex: 1;
@@ -652,6 +711,27 @@ onMounted(refresh)
   align-content: flex-start;
   gap: 8px;
   min-height: 68px;
+}
+.cat-tip {
+  max-width: 280px;
+}
+.cat-tip-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.cat-tip-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cat-tip-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  line-height: 1.5;
 }
 .add-form {
   display: flex;

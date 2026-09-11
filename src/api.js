@@ -130,7 +130,10 @@ export const listRecords = (dayId, category, keyword, page = 1, pageSize = 50) =
   return request(`/api/days/${dayId}/records?${q}`)
 }
 
-export const getReasonOptions = (dayId) => request(`/api/days/${dayId}/reason-options`)
+export const getReasonOptions = (category) => {
+  const q = new URLSearchParams({ category: category || '' })
+  return request(`/api/reason-options?${q}`)
+}
 
 /** 海康无记录：导入顶扫 log，按流水号回写原因 */
 export const matchDingSaoLog = async (dayId, file) => {

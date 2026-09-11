@@ -225,6 +225,7 @@ app.get(
       `SELECT d.id, d.day_date, d.source_type, d.manual_scan_rate, d.created_at,
               COUNT(r.id) AS record_count,
               COUNT(DISTINCT r.category) AS category_count,
+              GROUP_CONCAT(DISTINCT r.category ORDER BY r.category SEPARATOR '\u0001') AS categories,
               SUM(CASE WHEN r.category = '未提取到监管码' AND r.problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count,
               SUM(CASE WHEN r.category = '海康无记录' AND TRIM(r.reason_note) = '顶扫有记录' THEN 1 ELSE 0 END) AS ding_sao_found_count,
               (SELECT COUNT(*) FROM day_excel e WHERE e.day_id = d.id) AS excel_count
@@ -235,7 +236,18 @@ app.get(
        ORDER BY d.day_date ASC, d.id ASC`,
       [req.params.cityId]
     )
-    res.json({ city: cities[0], days })
+    res.json({
+      city: cities[0],
+      days: days.map((d) => ({
+        ...d,
+        categories: d.categories
+          ? String(d.categories)
+              .split('\u0001')
+              .map((x) => x.trim())
+              .filter(Boolean)
+          : [],
+      })),
+    })
   })
 )
 
@@ -563,10 +575,80 @@ app.get(
   })
 )
 
-// ---------- 单条记录：原因 / 备注图片 ----------
+// ---------- 原因选项：按分类全局共享（跨日期） ----------
+app.get(
+  '/api/reason-options',
+  h(async (req, res) => {
+    const category = String(req.query.category || '').trim()
+    if (!category || category === '空') {
+      return res.json({ options: [] })
+    }
+    const [rows] = await pool.query(
+      `SELECT reason_note,
+              SUBSTRING_INDEX(
+                GROUP_CONCAT(
+                  CASE
+                    WHEN problem_owner IN ('客户', '我方') THEN problem_owner
+                    ELSE NULL
+                  END
+                  ORDER BY id ASC
+                ),
+                ',',
+                1
+              ) AS problem_owner
+       FROM scan_record
+       WHERE category = ?
+         AND reason_note IS NOT NULL
+         AND TRIM(reason_note) <> ''
+       GROUP BY reason_note
+       ORDER BY MAX(id) DESC
+       LIMIT 500`,
+      [category]
+    )
+    res.json({
+      options: rows.map((r) => ({
+        value: r.reason_note,
+        problem_owner: r.problem_owner || null,
+      })),
+    })
+  })
+)
+
+/** 兼容旧接口：按当前日 + 可选 category；无 category 时仍按日汇总 */
 app.get(
   '/api/days/:id/reason-options',
   h(async (req, res) => {
+    const category = String(req.query.category || '').trim()
+    if (category && category !== '空') {
+      const [rows] = await pool.query(
+        `SELECT reason_note,
+                SUBSTRING_INDEX(
+                  GROUP_CONCAT(
+                    CASE
+                      WHEN problem_owner IN ('客户', '我方') THEN problem_owner
+                      ELSE NULL
+                    END
+                    ORDER BY id ASC
+                  ),
+                  ',',
+                  1
+                ) AS problem_owner
+         FROM scan_record
+         WHERE category = ?
+           AND reason_note IS NOT NULL
+           AND TRIM(reason_note) <> ''
+         GROUP BY reason_note
+         ORDER BY MAX(id) DESC
+         LIMIT 500`,
+        [category]
+      )
+      return res.json({
+        options: rows.map((r) => ({
+          value: r.reason_note,
+          problem_owner: r.problem_owner || null,
+        })),
+      })
+    }
     const [rows] = await pool.query(
       `SELECT reason_note,
               SUBSTRING_INDEX(
@@ -609,19 +691,20 @@ app.patch(
     }
     const [days] = await pool.query('SELECT id FROM acceptance_day WHERE id = ?', [req.params.id])
     if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
+    // 同分类 + 同原因：全局同步问题归属
     const [r] = await pool.query(
       `UPDATE scan_record
        SET problem_owner = ?
-       WHERE day_id = ?
-         AND category = '未提取到监管码'
+       WHERE category = '未提取到监管码'
          AND reason_note = ?`,
-      [owner, req.params.id, reasonNote]
+      [owner, reasonNote]
     )
     await writeAudit(req, '按原因批量设置问题归属', {
       day_id: Number(req.params.id),
       reason_note: reasonNote,
       problem_owner: owner,
       affected: r.affectedRows,
+      scope: 'global_by_category',
     })
     res.json({
       ok: true,
@@ -649,24 +732,29 @@ app.patch(
 
     let suggestedOwner = null
     if (reasonNote && rows[0].category === '未提取到监管码') {
+      // 同分类同原因：跨日期取已有归属
       const [peers] = await pool.query(
         `SELECT problem_owner FROM scan_record
-         WHERE day_id = ? AND reason_note = ? AND id <> ?
+         WHERE category = '未提取到监管码'
+           AND reason_note = ?
+           AND id <> ?
            AND problem_owner IN ('客户', '我方')
          ORDER BY id ASC LIMIT 1`,
-        [rows[0].day_id, reasonNote, req.params.id]
+        [reasonNote, req.params.id]
       )
       if (peers.length) {
         suggestedOwner = peers[0].problem_owner
-        await pool.query('UPDATE scan_record SET problem_owner = ? WHERE id = ?', [
-          suggestedOwner,
-          req.params.id,
-        ])
+        await pool.query(
+          `UPDATE scan_record SET problem_owner = ?
+           WHERE category = '未提取到监管码' AND reason_note = ?`,
+          [suggestedOwner, reasonNote]
+        )
       }
     }
 
     await writeAudit(req, '填写原因', {
       record_id: Number(req.params.id),
+      category: rows[0].category,
       reason_note: reasonNote || null,
     })
     res.json({
@@ -696,13 +784,13 @@ app.patch(
     const reasonNote = String(rows[0].reason_note || '').trim()
     let affected = 0
     if (reasonNote) {
+      // 同分类同原因：跨日期全局同步
       const [r] = await pool.query(
         `UPDATE scan_record
          SET problem_owner = ?
-         WHERE day_id = ?
-           AND category = '未提取到监管码'
+         WHERE category = '未提取到监管码'
            AND reason_note = ?`,
-        [owner, rows[0].day_id, reasonNote]
+        [owner, reasonNote]
       )
       affected = r.affectedRows
     } else {
@@ -714,6 +802,7 @@ app.patch(
       problem_owner: owner,
       affected,
       reason_note: reasonNote || null,
+      scope: reasonNote ? 'global_by_category' : 'single',
     })
     res.json({
       ok: true,
