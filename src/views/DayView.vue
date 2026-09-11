@@ -16,7 +16,7 @@ import {
   matchDingSaoLog,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
-import { includeDingSaoInRate } from '../scanRateMode.js'
+import { isDingSaoRateEnabled, setDingSaoRateEnabled, calcScanRatePercent } from '../scanRateMode.js'
 
 const props = defineProps({ dayId: String })
 const router = useRouter()
@@ -57,12 +57,20 @@ let dragOriginX = 0
 let dragOriginY = 0
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+const includeDingSaoInRate = computed({
+  get: () => isDingSaoRateEnabled(props.dayId),
+  set: (on) => setDingSaoRateEnabled(props.dayId, on),
+})
+
 const scanRateText = computed(() => {
   if (!(scanRate.value.total > 0)) return ''
-  const pct = includeDingSaoInRate.value
-    ? scanRate.value.percent_with_ding_sao
-    : scanRate.value.percent
-  return `${Number(pct ?? 0).toFixed(2)}%`
+  const pct = calcScanRatePercent(
+    scanRate.value.total,
+    scanRate.value.our_miss_count,
+    scanRate.value.ding_sao_found_count,
+    includeDingSaoInRate.value
+  )
+  return pct == null ? '' : `${pct.toFixed(2)}%`
 })
 
 const scanRateTitle = computed(() => {

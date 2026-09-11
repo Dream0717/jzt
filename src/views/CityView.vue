@@ -14,7 +14,7 @@ import {
   importSplitXls,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
-import { includeDingSaoInRate, calcScanRatePercent } from '../scanRateMode.js'
+import { isDingSaoRateEnabled, calcScanRatePercent, dingSaoRateByDay } from '../scanRateMode.js'
 
 const props = defineProps({ cityId: String })
 const router = useRouter()
@@ -144,11 +144,13 @@ function fmtWeek(dateStr) {
 }
 
 function scanRateOf(d) {
+  // 依赖 dingSaoRateByDay，开关变化时卡片读码率联动刷新
+  void dingSaoRateByDay[String(d.id)]
   const pct = calcScanRatePercent(
     d.record_count,
     d.our_miss_count,
     d.ding_sao_found_count,
-    includeDingSaoInRate.value
+    isDingSaoRateEnabled(d.id)
   )
   return pct == null ? '—' : `${pct.toFixed(2)}%`
 }
@@ -411,10 +413,6 @@ onMounted(refresh)
     <div class="nav-back">
       <el-button @click="router.push('/')">← 返回城市列表</el-button>
       <span class="city-title">{{ cityName }}</span>
-      <label class="rate-mode-switch" title="开启后读码率另扣除：海康无记录且原因为顶扫有记录">
-        <el-switch v-model="includeDingSaoInRate" />
-        <span>算上海康无记录的读码率</span>
-      </label>
     </div>
 
     <el-card shadow="never" class="page-card">
@@ -555,17 +553,6 @@ onMounted(refresh)
 .city-title {
   font-size: 16px;
   font-weight: 600;
-}
-.rate-mode-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--el-text-color-regular);
-  cursor: pointer;
-  user-select: none;
 }
 .toolbar {
   display: flex;
