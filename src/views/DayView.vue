@@ -334,6 +334,10 @@ function applyOwnerForReason(r, reason, owner) {
   }
 }
 
+function needOwnerRemarkWarn(r) {
+  return r?.problem_owner === '我方' && !r?.has_remark_image
+}
+
 function reasonNeedsTooltip(text) {
   return String(text || '').trim().length > 10
 }
@@ -625,6 +629,7 @@ onBeforeUnmount(() => {
         <table class="rec-table">
           <thead>
             <tr>
+              <th class="td-warn"></th>
               <th>业务单据编号</th>
               <th>条码流水号</th>
               <th>商品名称</th>
@@ -641,7 +646,7 @@ onBeforeUnmount(() => {
           </thead>
           <tbody>
             <tr v-if="!loadingRecords && records.length === 0">
-              <td :colspan="9 + (showOwnerColumn ? 1 : 0) + (showIssueColumns ? 2 : 0)" class="td-center">
+              <td :colspan="10 + (showOwnerColumn ? 1 : 0) + (showIssueColumns ? 2 : 0)" class="td-center">
                 无匹配记录
               </td>
             </tr>
@@ -656,6 +661,15 @@ onBeforeUnmount(() => {
               }"
               :style="rowStyleOf(r)"
             >
+              <td class="td-warn">
+                <el-tooltip
+                  v-if="needOwnerRemarkWarn(r)"
+                  content="问题归属为我方，且尚未上传备注图片"
+                  placement="top"
+                >
+                  <el-icon class="owner-remark-warn"><WarningFilled /></el-icon>
+                </el-tooltip>
+              </td>
               <td>{{ r.doc_no }}</td>
               <td>
                 <el-button
@@ -749,16 +763,6 @@ onBeforeUnmount(() => {
                     @click.stop="openPreview(r)"
                   />
                   <span v-else class="muted">{{ uploadingRemarkId === r.id ? '上传中…' : '点击后粘贴图片' }}</span>
-                  <el-upload
-                    :show-file-list="false"
-                    accept="image/*"
-                    :disabled="uploadingRemarkId === r.id"
-                    :before-upload="(file) => { uploadRemarkFile(r, file); return false }"
-                  >
-                    <el-button size="small" link type="primary" @click.stop>
-                      {{ r.has_remark_image ? '更换' : '选择' }}
-                    </el-button>
-                  </el-upload>
                   <el-button
                     v-if="r.has_remark_image"
                     size="small"
@@ -1013,6 +1017,20 @@ onBeforeUnmount(() => {
   background: #fde68a;
   color: #92400e;
   box-shadow: inset 4px 0 0 #f59e0b;
+}
+.td-warn {
+  width: 28px;
+  min-width: 28px;
+  padding-left: 6px !important;
+  padding-right: 4px !important;
+  text-align: center;
+  vertical-align: middle;
+}
+.owner-remark-warn {
+  color: #f56c6c;
+  font-size: 16px;
+  vertical-align: middle;
+  cursor: default;
 }
 .td-reason {
   min-width: 160px;
