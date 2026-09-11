@@ -104,7 +104,7 @@ const scanRateText = computed(() => {
 
 const scanRateTitle = computed(() => {
   if (includeDingSaoInRate.value) {
-    return '读码率 = (全部 − 未提取到监管码·我方 − 海康无记录·顶扫有记录) ÷ 全部 × 100%'
+    return '读码率 = (全部 − 未提取到监管码·我方 − 海康无记录·我方) ÷ 全部 × 100%'
   }
   return '读码率 = (全部 − 未提取到监管码·我方) ÷ 全部 × 100%'
 })

@@ -72,11 +72,12 @@ export function turnOffDingSaoRate(dayId, cityDayIds = []) {
   delete dingSaoRateByDay[String(dayId)]
 }
 
-export function calcScanRatePercent(total, ourMiss, dingSaoFound = 0, withDingSao = false) {
+export function calcScanRatePercent(total, ourMiss, hikOurMiss = 0, withDingSao = false) {
   const t = Number(total) || 0
   if (t <= 0) return null
   const miss = Number(ourMiss) || 0
-  const ding = Number(dingSaoFound) || 0
-  const num = withDingSao ? t - miss - ding : t - miss
+  const hik = Number(hikOurMiss) || 0
+  // withDingSao：另扣「海康无记录·我方」
+  const num = withDingSao ? t - miss - hik : t - miss
   return Number(((num / t) * 100).toFixed(2))
 }

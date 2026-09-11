@@ -76,12 +76,13 @@ async function insertScanRecords(conn, dayId, records) {
 }
 
 /** 读码率 = (总数 − 未提取到监管码且归属我方) ÷ 总数 × 100，保留两位小数
- *  percent_with_ding_sao 另扣「海康无记录 + 顶扫有记录」
+ *  percent_with_ding_sao 另扣「海康无记录且归属我方」
+ *  ding_sao_found_count 字段现表示：海康无记录·我方 数量（兼容旧字段名）
  */
-function buildScanRate(totalRaw, ourMissRaw, dingSaoFoundRaw = 0) {
+function buildScanRate(totalRaw, ourMissRaw, hikOurMissRaw = 0) {
   const total = Number(totalRaw) || 0
   const our_miss_count = Number(ourMissRaw) || 0
-  const ding_sao_found_count = Number(dingSaoFoundRaw) || 0
+  const ding_sao_found_count = Number(hikOurMissRaw) || 0
   const percent = total > 0 ? Number((((total - our_miss_count) / total) * 100).toFixed(2)) : 0
   const percent_with_ding_sao =
     total > 0
@@ -94,11 +95,19 @@ async function queryDayScanRate(dayId, conn = pool) {
   const [[rate]] = await conn.query(
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count,
-            SUM(CASE WHEN category = '海康无记录' AND TRIM(reason_note) = '顶扫有记录' THEN 1 ELSE 0 END) AS ding_sao_found_count
+            SUM(CASE WHEN category = '海康无记录' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS ding_sao_found_count
      FROM scan_record WHERE day_id = ?`,
     [dayId]
   )
   return buildScanRate(rate.total, rate.our_miss_count, rate.ding_sao_found_count)
+}
+
+/** 海康无记录：按原因给默认问题归属 */
+function defaultOwnerForHikReason(reasonNote) {
+  const note = String(reasonNote || '').trim()
+  if (note === '顶扫有记录') return '我方'
+  if (note === '顶扫无记录') return '客户'
+  return null
 }
 
 // ---------- 登录 / 注册 ----------
@@ -236,7 +245,7 @@ app.get(
               COUNT(DISTINCT r.category) AS category_count,
               GROUP_CONCAT(DISTINCT r.category ORDER BY r.category SEPARATOR '\u0001') AS categories,
               SUM(CASE WHEN r.category = '未提取到监管码' AND r.problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count,
-              SUM(CASE WHEN r.category = '海康无记录' AND TRIM(r.reason_note) = '顶扫有记录' THEN 1 ELSE 0 END) AS ding_sao_found_count,
+              SUM(CASE WHEN r.category = '海康无记录' AND r.problem_owner = '我方' THEN 1 ELSE 0 END) AS ding_sao_found_count,
               (SELECT COUNT(*) FROM day_excel e WHERE e.day_id = d.id) AS excel_count
        FROM acceptance_day d
        LEFT JOIN scan_record r ON r.day_id = d.id
@@ -759,6 +768,11 @@ app.patch(
       )
       if (peers.length) {
         suggestedOwner = peers[0].problem_owner
+      } else if (category === '海康无记录') {
+        // 顶扫有记录→我方；顶扫无记录→客户
+        suggestedOwner = defaultOwnerForHikReason(reasonNote)
+      }
+      if (suggestedOwner) {
         await pool.query(
           `UPDATE scan_record SET problem_owner = ?
            WHERE category = ? AND reason_note = ?`,
@@ -878,19 +892,21 @@ app.post(
       else missingIds.push(row.id)
     }
 
-    async function batchSetReason(ids, reason) {
+    async function batchSetReasonAndOwner(ids, reason, owner) {
       const BATCH = 500
       for (let i = 0; i < ids.length; i += BATCH) {
         const chunk = ids.slice(i, i + BATCH)
         await pool.query(
-          `UPDATE scan_record SET reason_note = ? WHERE id IN (${chunk.map(() => '?').join(',')})`,
-          [reason, ...chunk]
+          `UPDATE scan_record SET reason_note = ?, problem_owner = ?
+           WHERE id IN (${chunk.map(() => '?').join(',')})`,
+          [reason, owner, ...chunk]
         )
       }
     }
 
-    await batchSetReason(foundIds, '顶扫有记录')
-    await batchSetReason(missingIds, '顶扫无记录')
+    // 顶扫有记录 → 我方；顶扫无记录 → 客户
+    await batchSetReasonAndOwner(foundIds, '顶扫有记录', '我方')
+    await batchSetReasonAndOwner(missingIds, '顶扫无记录', '客户')
 
     await writeAudit(req, '导入顶扫log', {
       day_id: Number(req.params.id),
