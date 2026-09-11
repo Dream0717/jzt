@@ -15,6 +15,11 @@ const router = createRouter({
       component: () => import('./views/ExcelView.vue'),
       props: true,
     },
+    {
+      path: '/logs',
+      name: 'logs',
+      component: () => import('./views/LogsView.vue'),
+    },
   ],
 })
 

@@ -96,7 +96,13 @@ onMounted(refresh)
 .page {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.page :deep(.el-row) {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
 }
 .toolbar {
   display: flex;

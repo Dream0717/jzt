@@ -4,7 +4,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { pool, initSchema } from './db.js'
 import { parseHikDetail, groupRecordsByDate } from './importXls.js'
-import { login, logout, requireLogin } from './auth.js'
+import { login, logout, register, requireLogin, writeAudit, ensureBootstrapUser } from './auth.js'
 import { toPreviewXlsx } from './excelConvert.js'
 import { decodeUploadFilename, fixStoredFilename } from './filename.js'
 import {
@@ -92,15 +92,36 @@ async function queryDayScanRate(dayId, conn = pool) {
   return buildScanRate(rate.total, rate.our_miss_count, rate.ding_sao_found_count)
 }
 
-// ---------- 登录 ----------
+// ---------- 登录 / 注册 ----------
 app.post(
   '/api/login',
   h(async (req, res) => {
     const username = String(req.body?.username || '').trim()
     const password = String(req.body?.password || '')
-    const session = login(username, password)
+    const session = await login(username, password)
     if (!session) return res.status(401).json({ error: '账号或密码错误' })
+    await writeAudit(
+      { user: { userId: session.userId, username: session.username }, headers: req.headers, socket: req.socket },
+      '登录',
+      null
+    )
     res.json(session)
+  })
+)
+
+app.post(
+  '/api/register',
+  h(async (req, res) => {
+    const username = String(req.body?.username || '').trim()
+    const password = String(req.body?.password || '')
+    const result = await register(username, password)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    await writeAudit(
+      { user: { userId: result.userId, username: result.username }, headers: req.headers, socket: req.socket },
+      '注册',
+      null
+    )
+    res.json(result)
   })
 )
 
@@ -111,6 +132,37 @@ app.post(
     const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
     logout(token)
     res.json({ ok: true })
+  })
+)
+
+app.get(
+  '/api/audit-logs',
+  requireLogin,
+  h(async (req, res) => {
+    const page = Math.max(1, Number(req.query.page) || 1)
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 50))
+    const keyword = String(req.query.keyword || '').trim()
+    const where = []
+    const params = []
+    if (keyword) {
+      where.push('(username LIKE ? OR action LIKE ? OR detail LIKE ?)')
+      const kw = `%${keyword}%`
+      params.push(kw, kw, kw)
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) AS total FROM audit_log ${whereSql}`,
+      params
+    )
+    const offset = (page - 1) * pageSize
+    const [rows] = await pool.query(
+      `SELECT id, user_id, username, action, detail, ip, created_at
+       FROM audit_log ${whereSql}
+       ORDER BY id DESC
+       LIMIT ? OFFSET ?`,
+      [...params, pageSize, offset]
+    )
+    res.json({ total, page, pageSize, logs: rows })
   })
 )
 
@@ -137,6 +189,7 @@ app.post(
     if (name.length > 50) return res.status(400).json({ error: '城市名称过长' })
     try {
       const [r] = await pool.query('INSERT INTO city (name) VALUES (?)', [name])
+      await writeAudit(req, '创建城市', { name, id: r.insertId })
       res.json({ id: r.insertId, name })
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: `城市「${name}」已存在` })
@@ -157,6 +210,7 @@ app.delete(
     }
     const [r] = await pool.query('DELETE FROM city WHERE id = ?', [req.params.id])
     if (r.affectedRows === 0) return res.status(404).json({ error: '城市不存在' })
+    await writeAudit(req, '删除城市', { id: Number(req.params.id) })
     res.json({ ok: true })
   })
 )
@@ -205,6 +259,7 @@ app.post(
         'INSERT INTO acceptance_day (city_id, day_date, source_type) VALUES (?, ?, ?)',
         [req.params.cityId, date, sourceType]
       )
+      await writeAudit(req, '创建日期文件夹', { id: r.insertId, day_date: date, source_type: sourceType, city_id: Number(req.params.cityId) })
       res.json({ id: r.insertId, day_date: date, source_type: sourceType })
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: `日期「${date}」已存在` })
@@ -228,6 +283,7 @@ app.patch(
         rate || null,
         req.params.id,
       ])
+      await writeAudit(req, '修改读码率', { day_id: Number(req.params.id), manual_scan_rate: rate || null })
       return res.json({ ok: true, manual_scan_rate: rate || null })
     }
     return res.status(400).json({ error: '没有可更新的字段' })
@@ -241,6 +297,7 @@ app.delete(
     await removeDayUploads(req.params.id)
     const [r] = await pool.query('DELETE FROM acceptance_day WHERE id = ?', [req.params.id])
     if (r.affectedRows === 0) return res.status(404).json({ error: '日期不存在' })
+    await writeAudit(req, '删除日期文件夹', { day_id: Number(req.params.id) })
     res.json({ ok: true })
   })
 )
@@ -292,6 +349,10 @@ app.post(
 
       await insertScanRecords(conn, req.params.id, records)
       await conn.commit()
+      await writeAudit(req, '导入验收明细', {
+        day_id: Number(req.params.id),
+        imported: records.length,
+      })
       res.json({ total: records.length, imported: records.length })
     } catch (e) {
       await conn.rollback()
@@ -410,6 +471,12 @@ app.post(
         })
       }
       await conn.commit()
+      await writeAudit(req, '按日期拆分导入明细', {
+        city_id: Number(req.params.cityId),
+        file_count: files.length,
+        days: results.length,
+        imported: results.reduce((a, x) => a + x.imported, 0),
+      })
       res.json({
         total: totalParsed,
         skipped,
@@ -550,6 +617,12 @@ app.patch(
          AND reason_note = ?`,
       [owner, req.params.id, reasonNote]
     )
+    await writeAudit(req, '按原因批量设置问题归属', {
+      day_id: Number(req.params.id),
+      reason_note: reasonNote,
+      problem_owner: owner,
+      affected: r.affectedRows,
+    })
     res.json({
       ok: true,
       affected: r.affectedRows,
@@ -592,6 +665,10 @@ app.patch(
       }
     }
 
+    await writeAudit(req, '填写原因', {
+      record_id: Number(req.params.id),
+      reason_note: reasonNote || null,
+    })
     res.json({
       ok: true,
       reason_note: reasonNote || null,
@@ -632,6 +709,12 @@ app.patch(
       await pool.query('UPDATE scan_record SET problem_owner = ? WHERE id = ?', [owner, req.params.id])
       affected = 1
     }
+    await writeAudit(req, '设置问题归属', {
+      record_id: Number(req.params.id),
+      problem_owner: owner,
+      affected,
+      reason_note: reasonNote || null,
+    })
     res.json({
       ok: true,
       problem_owner: owner,
@@ -703,6 +786,11 @@ app.post(
     await batchSetReason(foundIds, '顶扫有记录')
     await batchSetReason(missingIds, '顶扫无记录')
 
+    await writeAudit(req, '导入顶扫log', {
+      day_id: Number(req.params.id),
+      found: foundIds.length,
+      missing: missingIds.length,
+    })
     res.json({
       total: rows.length,
       found: foundIds.length,
@@ -736,6 +824,7 @@ app.post(
       'UPDATE scan_record SET remark_image_path = ?, remark_image_mime = ? WHERE id = ?',
       [rel, req.file.mimetype, req.params.id]
     )
+    await writeAudit(req, '上传备注图片', { record_id: Number(req.params.id) })
     res.json({ ok: true, has_remark_image: true })
   })
 )
@@ -771,6 +860,7 @@ app.delete(
       'UPDATE scan_record SET remark_image_path = NULL, remark_image_mime = NULL WHERE id = ?',
       [req.params.id]
     )
+    await writeAudit(req, '删除备注图片', { record_id: Number(req.params.id) })
     res.json({ ok: true })
   })
 )
@@ -851,6 +941,12 @@ app.post(
       await writeUpload(rel, req.file.buffer)
       await conn.query('UPDATE day_excel SET file_path = ? WHERE id = ?', [rel, r.insertId])
       await conn.commit()
+      await writeAudit(req, '上传Excel', {
+        day_id: Number(req.params.id),
+        excel_id: r.insertId,
+        file_name: fileName,
+        overwritten: overwrite,
+      })
       res.json({
         id: r.insertId,
         file_name: fileName,
@@ -962,6 +1058,10 @@ app.put(
         req.params.id,
       ]
     )
+    await writeAudit(req, '保存Excel', {
+      excel_id: Number(req.params.id),
+      file_name: fileName,
+    })
     res.json({ ok: true, file_name: fileName, file_size: req.file.size })
   })
 )
@@ -976,6 +1076,7 @@ app.delete(
     if (rows.length === 0) return res.status(404).json({ error: 'Excel 不存在' })
     await removeUpload(rows[0].file_path)
     await pool.query('DELETE FROM day_excel WHERE id = ?', [req.params.id])
+    await writeAudit(req, '删除Excel', { excel_id: Number(req.params.id) })
     res.json({ ok: true })
   })
 )
@@ -992,6 +1093,7 @@ app.get(/^\/(?!api).*/, (req, res, next) => {
 const PORT = process.env.API_PORT || process.env.PORT || 3001
 ensureUploadRoot()
   .then(() => initSchema())
+  .then(() => ensureBootstrapUser())
   .then(() => {
     app.listen(PORT, () => console.log(`[api] ready on http://localhost:${PORT}`))
   })

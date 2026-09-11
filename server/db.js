@@ -67,6 +67,23 @@ const SCHEMA_SQL = [
     KEY idx_day_excel (day_id),
     CONSTRAINT fk_excel_day FOREIGN KEY (day_id) REFERENCES acceptance_day(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS app_user (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(32) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS audit_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT DEFAULT NULL,
+    username VARCHAR(32) NOT NULL,
+    action VARCHAR(128) NOT NULL,
+    detail TEXT DEFAULT NULL,
+    ip VARCHAR(64) DEFAULT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_audit_time (created_at),
+    KEY idx_audit_user (username)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ]
 
 const MIGRATE_SQL = [

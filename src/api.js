@@ -42,6 +42,20 @@ export async function login(username, password) {
   return data
 }
 
+export async function register(username, password) {
+  const data = await request('/api/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+  setSession(data.token, data.username)
+  return data
+}
+
+export const listAuditLogs = ({ page = 1, pageSize = 50, keyword = '' } = {}) => {
+  const q = new URLSearchParams({ page, pageSize, keyword })
+  return request(`/api/audit-logs?${q}`)
+}
+
 export async function logout() {
   try {
     if (token.value) {
