@@ -71,7 +71,7 @@ async function refreshBase() {
   }
 }
 
-async function refreshRecords() {
+async function refreshRecords({ scrollTop = false } = {}) {
   loadingRecords.value = true
   try {
     const data = await listRecords(
@@ -93,23 +93,33 @@ async function refreshRecords() {
     ElMessage.error(e.message)
   } finally {
     loadingRecords.value = false
+    if (scrollTop) {
+      await nextTick()
+      scrollListToTop()
+    }
   }
+}
+
+function scrollListToTop() {
+  if (tableWrap.value) tableWrap.value.scrollTop = 0
+  const anchor = tableWrap.value?.closest('.page-card') || tableWrap.value
+  anchor?.scrollIntoView({ block: 'start', behavior: 'smooth' })
 }
 
 function switchCategory(cat) {
   activeCategory.value = cat
   page.value = 1
-  refreshRecords()
+  refreshRecords({ scrollTop: true })
 }
 
 function doSearch() {
   page.value = 1
-  refreshRecords()
+  refreshRecords({ scrollTop: true })
 }
 
 function changePageSize() {
   page.value = 1
-  refreshRecords()
+  refreshRecords({ scrollTop: true })
 }
 
 function goJumpPage() {
@@ -119,7 +129,12 @@ function goJumpPage() {
   jumpPage.value = p
   if (p === page.value) return
   page.value = p
-  refreshRecords()
+  refreshRecords({ scrollTop: true })
+}
+
+function onPageChange(p) {
+  page.value = p
+  refreshRecords({ scrollTop: true })
 }
 
 async function startImport() {
@@ -564,6 +579,7 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
               :class="{
                 'row-copied': copiedId === r.id,
                 'row-our-problem': r.problem_owner === '我方',
+                'row-ding-sao-found': String(r.reason_note || '').trim() === '顶扫有记录',
               }"
             >
               <td>{{ r.doc_no }}</td>
@@ -680,7 +696,7 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
           :total="total"
           layout="total, prev, pager, next"
           background
-          @current-change="(p) => { page = p; refreshRecords() }"
+          @current-change="onPageChange"
         />
         <span class="pager-jump">
           跳至
@@ -829,6 +845,11 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
   background: #fef0f0;
   color: #c45656;
 }
+.rec-table tbody tr.row-ding-sao-found td {
+  background: #fff3bf;
+  color: #92400e;
+  box-shadow: inset 4px 0 0 #f59e0b;
+}
 .rec-table tbody tr.row-copied td {
   background: #ecf5ff;
   box-shadow: inset 0 0 0 2px var(--el-color-primary);
@@ -836,6 +857,15 @@ watch([records, showIssueColumns, showOwnerColumn, pageSize], async () => {
 .rec-table tbody tr.row-our-problem.row-copied td {
   background: #fde2e2;
   box-shadow: inset 0 0 0 2px #f56c6c;
+}
+.rec-table tbody tr.row-ding-sao-found.row-copied td {
+  background: #fde68a;
+  box-shadow: inset 4px 0 0 #f59e0b, inset 0 0 0 2px #d97706;
+}
+.rec-table tbody tr.row-ding-sao-found.row-our-problem td {
+  background: #fde68a;
+  color: #92400e;
+  box-shadow: inset 4px 0 0 #f59e0b;
 }
 .td-reason {
   min-width: 160px;
