@@ -360,7 +360,7 @@ function applyOwnerForReason(r, reason, owner) {
 }
 
 function needOwnerRemarkWarn(r) {
-  return !!reasonWarnByCategory.value[String(r?.category || '')] && !r?.has_remark_image
+  return !!reasonWarnByCategory.value[String(r?.reason_note || '').trim()] && !r?.has_remark_image
 }
 
 function reasonNeedsTooltip(text) {
