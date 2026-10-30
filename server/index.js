@@ -52,7 +52,8 @@ const RECORD_INSERT_SQL = `INSERT INTO scan_record
   VALUES `
 
 async function insertScanRecords(conn, dayId, records) {
-  const BATCH = 500
+  // 海康日志可能包含超长条码/文本，使用较小批次避免触发数据库单包大小限制。
+  const BATCH = 100
   for (let i = 0; i < records.length; i += BATCH) {
     const chunk = records.slice(i, i + BATCH).map((r) => [
       Number(dayId),
