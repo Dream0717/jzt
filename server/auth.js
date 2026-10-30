@@ -64,7 +64,7 @@ export async function register(username, password) {
       name,
       hashPassword(password),
     ])
-    return createSession(r.insertId, name)
+    return login(name, password)
   } catch (e) {
     if (e.code === 'ER_DUP_ENTRY') return { error: '账号已存在', status: 409 }
     throw e
@@ -76,15 +76,35 @@ export async function login(username, password) {
   const pass = String(password ?? '')
   if (!name || !pass) return null
   const [rows] = await pool.query(
-    'SELECT id, username, password_hash FROM app_user WHERE username = ? LIMIT 1',
+    'SELECT id, username, password_hash, active_session_token FROM app_user WHERE username = ? LIMIT 1',
     [name]
   )
   if (!rows.length) return null
   if (!verifyPassword(pass, rows[0].password_hash)) return null
-  if (sessionsByUser.has(rows[0].id)) {
+  if (rows[0].active_session_token || sessionsByUser.has(rows[0].id)) {
     return { error: '账号已经被其他设备登录', status: 409 }
   }
-  return createSession(rows[0].id, rows[0].username)
+  const token = crypto.randomBytes(24).toString('hex')
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [locked] = await conn.query('SELECT active_session_token FROM app_user WHERE id = ? FOR UPDATE', [rows[0].id])
+    if (locked[0]?.active_session_token) {
+      await conn.rollback()
+      return { error: '账号已经被其他设备登录', status: 409 }
+    }
+    await conn.query('UPDATE app_user SET active_session_token = ?, session_created_at = NOW() WHERE id = ?', [token, rows[0].id])
+    await conn.commit()
+  } catch (e) {
+    await conn.rollback()
+    throw e
+  } finally {
+    conn.release()
+  }
+  const session = { userId: rows[0].id, username: rows[0].username, createdAt: Date.now() }
+  sessions.set(token, session)
+  sessionsByUser.set(rows[0].id, token)
+  return { token, username: rows[0].username, userId: rows[0].id }
 }
 
 function createSession(userId, username) {
@@ -100,6 +120,9 @@ export function logout(token) {
   const session = sessions.get(token)
   sessions.delete(token)
   if (session && sessionsByUser.get(session.userId) === token) sessionsByUser.delete(session.userId)
+  if (session) {
+    pool.query('UPDATE app_user SET active_session_token = NULL, session_created_at = NULL WHERE id = ? AND active_session_token = ?', [session.userId, token]).catch(() => {})
+  }
 }
 
 export function getSession(token) {

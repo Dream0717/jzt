@@ -13,6 +13,7 @@ const titles = {
   day: '验收数据明细',
   excel: 'Excel 编辑',
   logs: '操作日志',
+  'reason-categories': '原因类型',
   trash: '回收站',
 }
 
@@ -103,6 +104,11 @@ function submitAuth() {
             >
               操作日志
             </el-button>
+            <el-button
+              size="small"
+              :type="route.name === 'reason-categories' ? 'primary' : 'default'"
+              @click="router.push('/reason-categories')"
+            >原因类型</el-button>
             <el-button
               size="small"
               :type="route.name === 'trash' ? 'primary' : 'default'"

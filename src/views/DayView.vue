@@ -17,6 +17,7 @@ import {
   matchDingSaoLog,
   updateRecordsReason,
   trashRecords,
+  listReasonCategories,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
 import { isDingSaoRateEnabled, setDingSaoRateEnabled, turnOffDingSaoRate, calcScanRatePercent } from '../scanRateMode.js'
@@ -125,7 +126,7 @@ async function refreshBase() {
     scanRate.value = d.scan_rate || { total: 0, our_miss_count: 0, percent: 0 }
     stats.value = s.stats
     rememberOpenedDay(props.dayId)
-    await preloadReasonOptions()
+    await Promise.all([preloadReasonOptions(), refreshReasonCategorySettings()])
   } catch (e) {
     ElMessage.error(e.message)
   }
@@ -289,6 +290,14 @@ async function copySerial(r) {
 }
 
 const reasonOptionsByCat = ref({})
+const reasonWarnByCategory = ref({})
+
+async function refreshReasonCategorySettings() {
+  try {
+    const data = await listReasonCategories()
+    reasonWarnByCategory.value = Object.fromEntries((data.categories || []).map((x) => [x.category, !!x.warn_no_remark]))
+  } catch { /* ignore */ }
+}
 
 async function ensureReasonOptions(category) {
   const cat = String(category || '').trim()
@@ -351,7 +360,7 @@ function applyOwnerForReason(r, reason, owner) {
 }
 
 function needOwnerRemarkWarn(r) {
-  return r?.problem_owner === '我方' && !r?.has_remark_image
+  return !!reasonWarnByCategory.value[String(r?.category || '')] && !r?.has_remark_image
 }
 
 function reasonNeedsTooltip(text) {

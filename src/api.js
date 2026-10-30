@@ -55,6 +55,12 @@ export const listAuditLogs = ({ page = 1, pageSize = 50, keyword = '' } = {}) =>
   const q = new URLSearchParams({ page, pageSize, keyword })
   return request(`/api/audit-logs?${q}`)
 }
+export const listReasonCategories = () => request('/api/reason-categories')
+export const updateReasonCategorySetting = (category, warnNoRemark) =>
+  writeRequest(`/api/reason-categories/${encodeURIComponent(category)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ warn_no_remark: !!warnNoRemark }),
+  })
 
 export async function logout() {
   try {

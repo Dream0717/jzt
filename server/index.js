@@ -811,6 +811,30 @@ app.get(
   })
 )
 
+app.get('/api/reason-categories', requireLogin, h(async (req, res) => {
+  const [rows] = await pool.query(
+    `SELECT r.category, COUNT(*) AS count, COALESCE(s.warn_no_remark, 0) AS warn_no_remark
+     FROM scan_record r
+     LEFT JOIN reason_category_setting s ON s.category = r.category
+     GROUP BY r.category, s.warn_no_remark
+     ORDER BY count DESC, r.category`
+  )
+  res.json({ categories: rows })
+}))
+
+app.patch('/api/reason-categories/:category', requireLogin, h(async (req, res) => {
+  const category = decodeURIComponent(String(req.params.category || '')).trim().slice(0, 255)
+  if (!category) return res.status(400).json({ error: '原因类型不能为空' })
+  const warn = req.body?.warn_no_remark ? 1 : 0
+  await pool.query(
+    `INSERT INTO reason_category_setting (category, warn_no_remark) VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE warn_no_remark = VALUES(warn_no_remark)`,
+    [category, warn]
+  )
+  await writeAudit(req, '设置原因类型备注提醒', { category, warn_no_remark: !!warn })
+  res.json({ ok: true, category, warn_no_remark: !!warn })
+}))
+
 // ---------- 明细查询 ----------
 app.get(
   '/api/days/:id/records',

@@ -22,6 +22,11 @@ const router = createRouter({
       name: 'logs',
       component: () => import('./views/LogsView.vue'),
     },
+    {
+      path: '/reason-categories',
+      name: 'reason-categories',
+      component: () => import('./views/ReasonCategoriesView.vue'),
+    },
   ],
 })
 
