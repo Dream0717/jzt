@@ -16,8 +16,8 @@ export const dbConfig = {
 export const pool = mysql.createPool({ ...dbConfig, waitForConnections: true, connectionLimit: 10 })
 // MariaDB 容器可能运行在 UTC；应用内所有数据库时间统一使用中国标准时间。
 pool.on('connection', (connection) => {
-  connection.query("SET time_zone = '+08:00'").catch((e) => {
-    console.warn('[db] 设置时区失败:', e.message)
+  connection.query("SET time_zone = '+08:00'", (e) => {
+    if (e) console.warn('[db] 设置时区失败:', e.message)
   })
 })
 
