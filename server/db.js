@@ -84,6 +84,25 @@ const SCHEMA_SQL = [
     KEY idx_audit_time (created_at),
     KEY idx_audit_user (username)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS trash_item (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    item_type VARCHAR(32) NOT NULL,
+    original_id BIGINT DEFAULT NULL,
+    label VARCHAR(255) DEFAULT NULL,
+    payload JSON NOT NULL,
+    deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    deleted_by VARCHAR(32) DEFAULT NULL,
+    KEY idx_trash_deleted (deleted_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS trash_record (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    trash_id BIGINT NOT NULL,
+    original_record_id BIGINT NOT NULL,
+    original_day_id INT NOT NULL,
+    payload JSON NOT NULL,
+    UNIQUE KEY uk_trash_record (trash_id, original_record_id),
+    KEY idx_trash_record_parent (trash_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ]
 
 const MIGRATE_SQL = [

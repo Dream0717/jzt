@@ -13,6 +13,7 @@ const titles = {
   day: '验收数据明细',
   excel: 'Excel 编辑',
   logs: '操作日志',
+  trash: '回收站',
 }
 
 const authTab = ref('login')
@@ -101,6 +102,11 @@ function submitAuth() {
             >
               操作日志
             </el-button>
+            <el-button
+              size="small"
+              :type="route.name === 'trash' ? 'primary' : 'default'"
+              @click="router.push('/trash')"
+            >回收站</el-button>
             <span class="user-name">{{ username }}</span>
             <el-button size="small" @click="doLogout">退出</el-button>
           </template>

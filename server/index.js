@@ -1,5 +1,6 @@
 import express from 'express'
 import multer from 'multer'
+import ExcelJS from 'exceljs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { pool, initSchema } from './db.js'
@@ -73,6 +74,29 @@ async function insertScanRecords(conn, dayId, records) {
     const groups = chunk.map(() => `(${Array(RECORD_COLS).fill('?').join(',')})`).join(',')
     await conn.query(RECORD_INSERT_SQL + groups, chunk.flat())
   }
+}
+
+async function addTrashItem(conn, req, itemType, originalId, label, payload) {
+  const recordRows = Array.isArray(payload?.records) ? payload.records : []
+  const savedPayload = { ...(payload || {}) }
+  delete savedPayload.records
+  const [result] = await conn.query(
+    'INSERT INTO trash_item (item_type, original_id, label, payload, deleted_by) VALUES (?, ?, ?, ?, ?)',
+    [itemType, originalId || null, String(label || '').slice(0, 255), JSON.stringify(savedPayload), req.user?.username || null]
+  )
+  const trashId = result.insertId
+  for (let i = 0; i < recordRows.length; i += 250) {
+    const chunk = recordRows.slice(i, i + 250)
+    const values = chunk.map(() => '(?, ?, ?, ?)').join(',')
+    const params = chunk.flatMap((record) => [trashId, record.id, record.day_id, JSON.stringify(record)])
+    await conn.query(`INSERT INTO trash_record (trash_id, original_record_id, original_day_id, payload) VALUES ${values}`, params)
+  }
+  return trashId
+}
+
+function parseTrashPayload(value) {
+  if (value && typeof value === 'object') return value
+  return JSON.parse(String(value || '{}'))
 }
 
 /** 读码率 = (总数 − 未提取到监管码且归属我方) ÷ 总数 × 100，保留两位小数
@@ -220,16 +244,26 @@ app.delete(
   '/api/cities/:id',
   requireLogin,
   h(async (req, res) => {
-    const [days] = await pool.query('SELECT id FROM acceptance_day WHERE city_id = ?', [
-      req.params.id,
-    ])
-    for (const day of days) {
-      await removeDayUploads(day.id)
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      const [[city]] = await conn.query('SELECT * FROM city WHERE id = ?', [req.params.id])
+      if (!city) { await conn.rollback(); return res.status(404).json({ error: '城市不存在' }) }
+      const [days] = await conn.query('SELECT * FROM acceptance_day WHERE city_id = ?', [req.params.id])
+      const dayIds = days.map((day) => day.id)
+      const records = dayIds.length ? (await conn.query(`SELECT * FROM scan_record WHERE day_id IN (${dayIds.map(() => '?').join(',')})`, dayIds))[0] : []
+      const excels = dayIds.length ? (await conn.query(`SELECT * FROM day_excel WHERE day_id IN (${dayIds.map(() => '?').join(',')})`, dayIds))[0] : []
+      await addTrashItem(conn, req, 'city', city.id, city.name, { city, days, records, excels })
+      await conn.query('DELETE FROM city WHERE id = ?', [req.params.id])
+      await conn.commit()
+      await writeAudit(req, '移入回收站：删除城市', { id: Number(req.params.id) })
+      res.json({ ok: true })
+    } catch (e) {
+      await conn.rollback()
+      throw e
+    } finally {
+      conn.release()
     }
-    const [r] = await pool.query('DELETE FROM city WHERE id = ?', [req.params.id])
-    if (r.affectedRows === 0) return res.status(404).json({ error: '城市不存在' })
-    await writeAudit(req, '删除城市', { id: Number(req.params.id) })
-    res.json({ ok: true })
   })
 )
 
@@ -273,6 +307,64 @@ app.get(
     })
   })
 )
+
+app.get('/api/cities/:cityId/aggregate', h(async (req, res) => {
+  const ids = String(req.query.day_ids || '').split(',').map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0)
+  if (!ids.length) return res.status(400).json({ error: '请至少选择一个日期' })
+  const placeholders = ids.map(() => '?').join(',')
+  const [[row]] = await pool.query(
+    `SELECT COUNT(*) AS total,
+       SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count,
+       SUM(CASE WHEN category = '海康无记录' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS ding_sao_found_count
+     FROM scan_record WHERE day_id IN (${placeholders})`, ids
+  )
+  const [stats] = await pool.query(
+    `SELECT category, COUNT(*) AS count FROM scan_record WHERE day_id IN (${placeholders}) GROUP BY category ORDER BY (category = '空') DESC, count DESC`, ids
+  )
+  res.json({ day_ids: ids, stats, scan_rate: buildScanRate(row.total, row.our_miss_count, row.ding_sao_found_count) })
+}))
+
+app.get('/api/cities/:cityId/export-days', requireLogin, h(async (req, res) => {
+  const ids = String(req.query.day_ids || '').split(',').map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0)
+  if (!ids.length) return res.status(400).json({ error: '请至少选择一个日期' })
+  const placeholders = ids.map(() => '?').join(',')
+  const [days] = await pool.query(`SELECT id, day_date FROM acceptance_day WHERE city_id = ? AND id IN (${placeholders}) ORDER BY day_date`, [req.params.cityId, ...ids])
+  const wb = new ExcelJS.Workbook(); wb.creator = '九州通读码数据验收'
+  for (const day of days) {
+    const [rows] = await pool.query(
+      `SELECT COALESCE(NULLIF(doc_no,''), doc_head_id) AS doc_no, serial_no, goods_name, spec, manufacturer, drug_code, operator, op_time, raw_reason, category, reason_note, problem_owner, remark_image_path
+       FROM scan_record WHERE day_id = ? ORDER BY op_time DESC, id DESC`, [day.id]
+    )
+    const ws = wb.addWorksheet(String(day.day_date).slice(0, 31))
+    ws.columns = [
+      { header: '业务单据编号', key: 'doc_no', width: 20 }, { header: '条码流水号', key: 'serial_no', width: 22 },
+      { header: '商品名称', key: 'goods_name', width: 24 }, { header: '药品规格', key: 'spec', width: 20 },
+      { header: '生产厂家', key: 'manufacturer', width: 24 }, { header: '监管码', key: 'drug_code', width: 24 },
+      { header: '操作员', key: 'operator', width: 14 }, { header: '操作时间', key: 'op_time', width: 20 },
+      { header: '补扫原因', key: 'raw_reason', width: 24 }, { header: '分类', key: 'category', width: 20 },
+      { header: '原因说明', key: 'reason_note', width: 24 }, { header: '问题归属', key: 'problem_owner', width: 12 }, { header: '备注图片', key: 'remark', width: 14 },
+    ]
+    ws.getRow(1).font = { bold: true }; ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'D9EAF7' } }
+    for (const row of rows) {
+      const excelRow = ws.addRow({ ...row, remark: row.remark_image_path ? '见图片' : '' })
+      if (row.remark_image_path) {
+        try {
+          const image = await readUpload(row.remark_image_path)
+          const ext = String(row.remark_image_path).toLowerCase().endsWith('.png') ? 'png' : 'jpeg'
+          const imageId = wb.addImage({ buffer: image, extension: ext })
+          ws.addImage(imageId, { tl: { col: 12, row: excelRow.number - 1 }, ext: { width: 90, height: 70 } })
+          excelRow.height = 58
+        } catch { /* 图片缺失时保留文字 */ }
+      }
+    }
+    ws.autoFilter = { from: 'A1', to: `M${Math.max(1, ws.rowCount)}` }
+  }
+  if (!wb.worksheets.length) wb.addWorksheet('导出')
+  const buf = await wb.xlsx.writeBuffer()
+  res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('验收明细导出.xlsx')}`)
+  res.send(Buffer.from(buf))
+}))
 
 app.post(
   '/api/cities/:cityId/days',
@@ -329,13 +421,161 @@ app.delete(
   '/api/days/:id',
   requireLogin,
   h(async (req, res) => {
-    await removeDayUploads(req.params.id)
-    const [r] = await pool.query('DELETE FROM acceptance_day WHERE id = ?', [req.params.id])
-    if (r.affectedRows === 0) return res.status(404).json({ error: '日期不存在' })
-    await writeAudit(req, '删除日期文件夹', { day_id: Number(req.params.id) })
-    res.json({ ok: true })
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      const [[day]] = await conn.query('SELECT * FROM acceptance_day WHERE id = ?', [req.params.id])
+      if (!day) {
+        await conn.rollback()
+        return res.status(404).json({ error: '日期不存在' })
+      }
+      const [records] = await conn.query('SELECT * FROM scan_record WHERE day_id = ?', [req.params.id])
+      const [excels] = await conn.query('SELECT * FROM day_excel WHERE day_id = ?', [req.params.id])
+      await addTrashItem(conn, req, 'day', day.id, day.day_date, { day, records, excels })
+      await conn.query('DELETE FROM acceptance_day WHERE id = ?', [req.params.id])
+      await conn.commit()
+      await writeAudit(req, '移入回收站：删除日期文件夹', { day_id: Number(req.params.id) })
+      res.json({ ok: true })
+    } catch (e) {
+      await conn.rollback()
+      throw e
+    } finally {
+      conn.release()
+    }
   })
 )
+
+// ---------- 回收站 ----------
+app.get('/api/trash', requireLogin, h(async (req, res) => {
+  const [items] = await pool.query(
+    'SELECT id, item_type, original_id, label, deleted_at, deleted_by FROM trash_item ORDER BY deleted_at DESC LIMIT 200'
+  )
+  res.json({ items })
+}))
+
+app.post('/api/trash/:id/restore', requireLogin, h(async (req, res) => {
+  const conn = await pool.getConnection()
+  let committed = false
+  try {
+    await conn.beginTransaction()
+    const [items] = await conn.query('SELECT * FROM trash_item WHERE id = ? FOR UPDATE', [req.params.id])
+    if (!items.length) {
+      await conn.rollback()
+      return res.status(404).json({ error: '回收站项目不存在' })
+    }
+    const item = items[0]
+    const payload = parseTrashPayload(item.payload)
+    const [trashedRows] = await conn.query('SELECT payload FROM trash_record WHERE trash_id = ? ORDER BY original_record_id', [item.id])
+    const trashedRecords = trashedRows.map((row) => parseTrashPayload(row.payload))
+    const records = ['records', 'day', 'city'].includes(item.item_type) ? [...trashedRecords] : []
+
+    if (item.item_type === 'city') {
+      const city = payload.city
+      const [conflicts] = await conn.query('SELECT id FROM city WHERE id = ? OR name = ?', [city.id, city.name])
+      if (conflicts.length) {
+        await conn.rollback()
+        return res.status(409).json({ error: '同名城市或原城市编号已存在，无法恢复' })
+      }
+      await conn.query('INSERT INTO city (id, name, created_at) VALUES (?, ?, ?)', [city.id, city.name, city.created_at])
+      for (const d of payload.days || []) {
+        await conn.query(
+          'INSERT INTO acceptance_day (id, city_id, day_date, source_type, manual_scan_rate, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          [d.id, city.id, d.day_date, d.source_type, d.manual_scan_rate, d.created_at]
+        )
+      }
+      for (const excel of payload.excels || []) {
+        const cols = ['id', 'day_id', 'file_name', 'mime_type', 'file_size', 'file_path', 'created_at']
+        await conn.query(`INSERT INTO day_excel (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, cols.map((key) => excel[key] ?? null))
+      }
+    } else if (item.item_type === 'day') {
+      const d = payload.day
+      const [[city]] = await conn.query('SELECT id FROM city WHERE id = ?', [d.city_id])
+      const [conflicts] = await conn.query(
+        'SELECT id FROM acceptance_day WHERE id = ? OR (city_id = ? AND day_date = ?)',
+        [d.id, d.city_id, d.day_date]
+      )
+      if (!city || conflicts.length) {
+        await conn.rollback()
+        return res.status(409).json({ error: !city ? '所属城市已删除，无法恢复' : '该日期已存在，无法恢复' })
+      }
+      await conn.query(
+        'INSERT INTO acceptance_day (id, city_id, day_date, source_type, manual_scan_rate, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [d.id, d.city_id, d.day_date, d.source_type, d.manual_scan_rate, d.created_at]
+      )
+      for (const excel of payload.excels || []) {
+        const cols = ['id', 'day_id', 'file_name', 'mime_type', 'file_size', 'file_path', 'created_at']
+        await conn.query(
+          `INSERT INTO day_excel (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
+          cols.map((key) => excel[key] ?? null)
+        )
+      }
+    } else if (item.item_type === 'excel') {
+      const excel = payload.excel
+      const [[day]] = await conn.query('SELECT id FROM acceptance_day WHERE id = ?', [excel.day_id])
+      const [conflicts] = await conn.query('SELECT id FROM day_excel WHERE id = ?', [excel.id])
+      if (!day || conflicts.length) {
+        await conn.rollback()
+        return res.status(409).json({ error: !day ? '所属日期已删除，无法恢复' : '该 Excel 已存在，无法恢复' })
+      }
+      const cols = ['id', 'day_id', 'file_name', 'mime_type', 'file_size', 'file_path', 'created_at']
+      await conn.query(
+        `INSERT INTO day_excel (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
+        cols.map((key) => excel[key] ?? null)
+      )
+    } else if (item.item_type === 'records') {
+      const [[day]] = await conn.query('SELECT id FROM acceptance_day WHERE id = ?', [payload.day_id])
+      if (!day) {
+        await conn.rollback()
+        return res.status(409).json({ error: '所属日期已删除，无法恢复明细' })
+      }
+    } else {
+      await conn.rollback()
+      return res.status(400).json({ error: '暂不支持恢复此类项目' })
+    }
+
+    for (const record of records) {
+      const cols = [
+        'id', 'day_id', 'doc_head_id', 'doc_no', 'serial_no', 'drug_code', 'goods_no',
+        'goods_name', 'spec', 'manufacturer', 'operator', 'op_time', 'goods_inner_no',
+        'raw_reason', 'category', 'reason_note', 'remark_image_path', 'remark_image_mime',
+        'problem_owner', 'created_at',
+      ]
+      await conn.query(
+        `INSERT INTO scan_record (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
+        cols.map((key) => record[key] ?? null)
+      )
+    }
+
+    await conn.query('DELETE FROM trash_record WHERE trash_id = ?', [req.params.id])
+    await conn.query('DELETE FROM trash_item WHERE id = ?', [req.params.id])
+    await conn.commit()
+    committed = true
+    await writeAudit(req, '恢复回收站项目', { trash_id: Number(req.params.id), item_type: item.item_type })
+    res.json({ ok: true })
+  } catch (e) {
+    if (!committed) await conn.rollback()
+    if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '数据已存在，无法恢复；原项目仍保留在回收站' })
+    throw e
+  } finally {
+    conn.release()
+  }
+}))
+
+app.delete('/api/trash/:id', requireLogin, h(async (req, res) => {
+  const [items] = await pool.query('SELECT item_type, payload FROM trash_item WHERE id = ?', [req.params.id])
+  if (!items.length) return res.status(404).json({ error: '回收站项目不存在' })
+  const payload = parseTrashPayload(items[0].payload)
+  const [trashRecords] = await pool.query('SELECT payload FROM trash_record WHERE trash_id = ?', [req.params.id])
+  const records = trashRecords.map((row) => parseTrashPayload(row.payload))
+  for (const record of records) if (record.remark_image_path) await removeUpload(record.remark_image_path)
+  const excels = items[0].item_type === 'excel' ? [payload.excel] : payload.excels || []
+  for (const excel of excels) if (excel?.file_path) await removeUpload(excel.file_path)
+  await pool.query('DELETE FROM trash_record WHERE trash_id = ?', [req.params.id])
+  const [r] = await pool.query('DELETE FROM trash_item WHERE id = ?', [req.params.id])
+  if (!r.affectedRows) return res.status(404).json({ error: '回收站项目不存在' })
+  await writeAudit(req, '彻底删除回收站项目', { trash_id: Number(req.params.id) })
+  res.json({ ok: true })
+}))
 
 app.get(
   '/api/days/:id',
@@ -361,7 +601,7 @@ app.post(
   upload.single('file'),
   h(async (req, res) => {
     if (!req.file) return res.status(400).json({ error: '请选择文件' })
-    const [days] = await pool.query('SELECT id, source_type FROM acceptance_day WHERE id = ?', [
+    const [days] = await pool.query('SELECT id, source_type, day_date FROM acceptance_day WHERE id = ?', [
       req.params.id,
     ])
     if (days.length === 0) return res.status(404).json({ error: '日期不存在' })
@@ -370,12 +610,21 @@ app.post(
     }
 
     const records = parseHikDetail(req.file.buffer)
+    const importMode = String(req.query.mode || req.body?.mode || 'overwrite').toLowerCase() === 'append' ? 'append' : 'overwrite'
 
     const conn = await pool.getConnection()
     try {
       await conn.beginTransaction()
-      await removeRemarkUploads(req.params.id)
-      await conn.query('DELETE FROM scan_record WHERE day_id = ?', [req.params.id])
+      if (importMode === 'overwrite') {
+        const [previous] = await conn.query('SELECT * FROM scan_record WHERE day_id = ?', [req.params.id])
+        if (previous.length) {
+          await addTrashItem(conn, req, 'records', null, `${days[0].day_date} 导入覆盖前明细`, {
+            day_id: Number(req.params.id),
+            records: previous,
+          })
+        }
+        await conn.query('DELETE FROM scan_record WHERE day_id = ?', [req.params.id])
+      }
       if (!days[0].source_type) {
         await conn.query(`UPDATE acceptance_day SET source_type = 'detail' WHERE id = ?`, [
           req.params.id,
@@ -454,15 +703,15 @@ app.post(
       })
     }
 
-    const overwrite = String(req.query.overwrite || '') === '1'
+    const importMode = String(req.query.mode || 'choose').toLowerCase()
     const wouldOverwrite = dates.filter((d) => {
       const ex = dayByDate.get(d)
       return ex && ex.source_type !== 'excel'
     })
-    if (!overwrite && wouldOverwrite.length) {
+    if (!['append', 'overwrite'].includes(importMode) && wouldOverwrite.length) {
       return res.status(409).json({
-        error: '部分日期文件夹已存在，确认后将覆盖对应验收明细',
-        need_confirm: true,
+        error: '部分日期文件夹已存在，请选择追加或覆盖',
+        need_mode: true,
         file_count: files.length,
         files: fileSummaries,
         dates: dates.map((date) => ({
@@ -492,8 +741,16 @@ app.post(
           dayId = r.insertId
           created = true
         } else {
-          await removeRemarkUploads(dayId)
-          await conn.query('DELETE FROM scan_record WHERE day_id = ?', [dayId])
+          if (importMode === 'overwrite') {
+            const [previous] = await conn.query('SELECT * FROM scan_record WHERE day_id = ?', [dayId])
+            if (previous.length) {
+              await addTrashItem(conn, req, 'records', null, `${date} 拆分导入覆盖前明细`, {
+                day_id: Number(dayId),
+                records: previous,
+              })
+            }
+            await conn.query('DELETE FROM scan_record WHERE day_id = ?', [dayId])
+          }
           await conn.query(`UPDATE acceptance_day SET source_type = 'detail' WHERE id = ?`, [dayId])
         }
         await insertScanRecords(conn, dayId, dayRecords)
@@ -503,6 +760,7 @@ app.post(
           imported: dayRecords.length,
           created,
           overwritten: !created,
+          appended: !created && importMode === 'append',
         })
       }
       await conn.commit()
@@ -597,6 +855,87 @@ app.get(
     res.json({ total, records })
   })
 )
+
+app.patch('/api/days/:id/records/reason', requireLogin, h(async (req, res) => {
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter((id) => Number.isInteger(id) && id > 0))].slice(0, 1000)
+  const reasonNote = String(req.body?.reason_note ?? '').trim().slice(0, 512)
+  if (!ids.length) return res.status(400).json({ error: '请先选择明细行' })
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [rows] = await conn.query(
+      `SELECT id, category FROM scan_record WHERE day_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
+      [req.params.id, ...ids]
+    )
+    const editable = rows.filter((row) => row.category !== '空')
+    if (!editable.length) {
+      await conn.rollback()
+      return res.status(400).json({ error: '选中的记录没有可填写原因的项目' })
+    }
+    const editableIds = editable.map((row) => row.id)
+    await conn.query(
+      `UPDATE scan_record SET reason_note = ? WHERE day_id = ? AND id IN (${editableIds.map(() => '?').join(',')})`,
+      [reasonNote || null, req.params.id, ...editableIds]
+    )
+    const ownerByCategory = {}
+    if (reasonNote) {
+      for (const category of new Set(editable.map((row) => row.category).filter(canSetProblemOwner))) {
+        const [peers] = await conn.query(
+          `SELECT problem_owner FROM scan_record WHERE category = ? AND reason_note = ?
+             AND id NOT IN (${editableIds.map(() => '?').join(',')})
+             AND problem_owner IN ('客户','我方') ORDER BY id ASC LIMIT 1`,
+          [category, reasonNote, ...editableIds]
+        )
+        const owner = peers[0]?.problem_owner || (category === '海康无记录' ? defaultOwnerForHikReason(reasonNote) : null)
+        if (owner) {
+          ownerByCategory[category] = owner
+          await conn.query(
+            `UPDATE scan_record SET problem_owner = ? WHERE day_id = ? AND id IN (${editableIds.map(() => '?').join(',')}) AND category = ?`,
+            [owner, req.params.id, ...editableIds, category]
+          )
+        }
+      }
+    }
+    await conn.commit()
+    await writeAudit(req, '多选同步填写原因', { day_id: Number(req.params.id), reason_note: reasonNote || null, affected: editableIds.length })
+    const [updated] = await pool.query(
+      `SELECT id, category, reason_note, problem_owner FROM scan_record WHERE day_id = ? AND id IN (${editableIds.map(() => '?').join(',')})`,
+      [req.params.id, ...editableIds]
+    )
+    res.json({ ok: true, updated, affected: editableIds.length, skipped: rows.length - editable.length, scan_rate: await queryDayScanRate(req.params.id) })
+  } catch (e) {
+    await conn.rollback()
+    throw e
+  } finally {
+    conn.release()
+  }
+}))
+
+app.post('/api/days/:id/records/trash', requireLogin, h(async (req, res) => {
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter((id) => Number.isInteger(id) && id > 0))].slice(0, 1000)
+  if (!ids.length) return res.status(400).json({ error: '请先选择明细行' })
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [[day]] = await conn.query('SELECT id, day_date FROM acceptance_day WHERE id = ?', [req.params.id])
+    if (!day) { await conn.rollback(); return res.status(404).json({ error: '日期不存在' }) }
+    const [records] = await conn.query(
+      `SELECT * FROM scan_record WHERE day_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
+      [req.params.id, ...ids]
+    )
+    if (!records.length) { await conn.rollback(); return res.status(404).json({ error: '未找到选中的明细' }) }
+    await addTrashItem(conn, req, 'records', null, `${day.day_date} · ${records.length} 条验收明细`, { day_id: Number(day.id), records })
+    await conn.query(`DELETE FROM scan_record WHERE day_id = ? AND id IN (${records.map(() => '?').join(',')})`, [req.params.id, ...records.map((r) => r.id)])
+    await conn.commit()
+    await writeAudit(req, '删除验收明细', { day_id: Number(req.params.id), count: records.length })
+    res.json({ ok: true, deleted: records.length })
+  } catch (e) {
+    await conn.rollback()
+    throw e
+  } finally {
+    conn.release()
+  }
+}))
 
 // ---------- 原因选项：按分类全局共享（跨日期） ----------
 app.get(
@@ -1197,13 +1536,20 @@ app.delete(
   '/api/excels/:id',
   requireLogin,
   h(async (req, res) => {
-    const [rows] = await pool.query('SELECT id, file_path FROM day_excel WHERE id = ?', [
+    const [rows] = await pool.query('SELECT * FROM day_excel WHERE id = ?', [
       req.params.id,
     ])
     if (rows.length === 0) return res.status(404).json({ error: 'Excel 不存在' })
-    await removeUpload(rows[0].file_path)
-    await pool.query('DELETE FROM day_excel WHERE id = ?', [req.params.id])
-    await writeAudit(req, '删除Excel', { excel_id: Number(req.params.id) })
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      await addTrashItem(conn, req, 'excel', rows[0].id, rows[0].file_name, { excel: rows[0] })
+      await conn.query('DELETE FROM day_excel WHERE id = ?', [req.params.id])
+      await conn.commit()
+    } catch (e) {
+      await conn.rollback(); throw e
+    } finally { conn.release() }
+    await writeAudit(req, '移入回收站：删除Excel', { excel_id: Number(req.params.id) })
     res.json({ ok: true })
   })
 )

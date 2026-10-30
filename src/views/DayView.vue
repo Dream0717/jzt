@@ -15,6 +15,8 @@ import {
   deleteRemarkImage,
   remarkImageUrl,
   matchDingSaoLog,
+  updateRecordsReason,
+  trashRecords,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
 import { isDingSaoRateEnabled, setDingSaoRateEnabled, turnOffDingSaoRate, calcScanRatePercent } from '../scanRateMode.js'
@@ -37,12 +39,14 @@ const activeCategory = ref('')
 const keyword = ref('')
 let searchTimer = null
 const records = ref([])
+const selectedRecordIds = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
 const pageSizeOptions = [20, 50, 100, 200]
 const jumpPage = ref(1)
 const importing = ref(false)
+const importMode = ref('overwrite')
 const loadingRecords = ref(false)
 const importInputRef = ref(null)
 const dingSaoInputRef = ref(null)
@@ -158,6 +162,20 @@ async function refreshRecords({ scrollTop = false } = {}) {
   }
 }
 
+function toggleRecord(r, checked) {
+  const set = new Set(selectedRecordIds.value)
+  if (checked) set.add(r.id); else set.delete(r.id)
+  selectedRecordIds.value = [...set]
+}
+function toggleAllRecords(checked) {
+  selectedRecordIds.value = checked ? records.value.map((r) => r.id) : []
+}
+async function deleteSelectedRecords() {
+  if (!selectedRecordIds.value.length) return ElMessage.warning('请先选择明细行')
+  try { await ElMessageBox.confirm(`确定将选中的 ${selectedRecordIds.value.length} 条明细移入回收站吗？`, '删除确认', { type: 'warning' }) } catch { return }
+  try { const data = await trashRecords(props.dayId, selectedRecordIds.value); ElMessage.success(`已移入回收站 ${data.deleted} 条`); selectedRecordIds.value = []; await refreshBase(); await refreshRecords() } catch (e) { if (!isAuthCancelled(e)) ElMessage.error(e.message) }
+}
+
 function scrollListToTop() {
   if (tableWrap.value) {
     tableWrap.value.scrollTop = 0
@@ -210,15 +228,13 @@ function onPageChange(p) {
 async function startImport() {
   if (importing.value) return
   if (stats.value.length || (scanRate.value.total || 0) > 0) {
-    try {
-      await ElMessageBox.confirm(
-        '该日期已有数据，继续导入将覆盖原有全部记录及已填写的原因/备注/问题归属，是否继续？',
-        '覆盖确认',
-        { type: 'warning', confirmButtonText: '继续导入', cancelButtonText: '取消' }
-      )
-    } catch {
-      return
-    }
+    importMode.value = await ElMessageBox.confirm(
+        '该日期已有数据。选择“追加”会保留现有明细；选择“覆盖”会用新文件替换，旧明细可在回收站恢复。',
+        '选择导入方式',
+        { type: 'warning', confirmButtonText: '覆盖导入', cancelButtonText: '追加导入' }
+      ).then(() => 'overwrite').catch(() => 'append')
+  } else {
+    importMode.value = 'overwrite'
   }
   importInputRef.value?.click()
 }
@@ -233,7 +249,7 @@ async function onImportFileChange(ev) {
   }
   importing.value = true
   try {
-    const r = await importXls(props.dayId, file)
+    const r = await importXls(props.dayId, file, { mode: importMode.value })
     ElMessage.success(`导入成功：共 ${r.total} 条，有效 ${r.imported} 条`)
     await refreshBase()
     page.value = 1
@@ -391,6 +407,21 @@ async function saveReason(r) {
   if (!isIssueRecord(r)) return
   savingReasonId.value = r.id
   try {
+    const ids = selectedRecordIds.value.includes(r.id) ? selectedRecordIds.value : []
+    if (ids.length > 1) {
+      const data = await updateRecordsReason(props.dayId, ids, r.reason_note || '')
+      for (const updated of data.updated || []) {
+        const selectedRow = records.value.find((item) => item.id === updated.id)
+        if (selectedRow) {
+          selectedRow.reason_note = updated.reason_note || ''
+          selectedRow.problem_owner = updated.problem_owner || selectedRow.problem_owner
+        }
+      }
+      if (data.scan_rate) scanRate.value = data.scan_rate
+      await refreshReasonOptions(r.category)
+      ElMessage.success(`已同步原因至 ${data.affected} 条选中明细`)
+      return
+    }
     const data = await updateRecordReason(r.id, r.reason_note || '')
     r.reason_note = data.reason_note || ''
     if (data.problem_owner) {
@@ -605,6 +636,8 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="search-bar">
+        <span v-if="selectedRecordIds.length" class="selected-count">已选 {{ selectedRecordIds.length }} 条</span>
+        <el-button v-if="selectedRecordIds.length" size="small" type="danger" plain @click="deleteSelectedRecords">移入回收站</el-button>
         <el-input
           v-model="keyword"
           clearable
@@ -629,6 +662,7 @@ onBeforeUnmount(() => {
         <table class="rec-table">
           <thead>
             <tr>
+              <th class="td-select"><input type="checkbox" :checked="records.length > 0 && selectedRecordIds.length === records.length" @change="toggleAllRecords($event.target.checked)" /></th>
               <th class="td-warn"></th>
               <th>业务单据编号</th>
               <th>条码流水号</th>
@@ -646,7 +680,7 @@ onBeforeUnmount(() => {
           </thead>
           <tbody>
             <tr v-if="!loadingRecords && records.length === 0">
-              <td :colspan="10 + (showOwnerColumn ? 1 : 0) + (showIssueColumns ? 2 : 0)" class="td-center">
+              <td :colspan="11 + (showOwnerColumn ? 1 : 0) + (showIssueColumns ? 2 : 0)" class="td-center">
                 无匹配记录
               </td>
             </tr>
@@ -661,6 +695,7 @@ onBeforeUnmount(() => {
               }"
               :style="rowStyleOf(r)"
             >
+              <td class="td-select"><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" @change="toggleRecord(r, $event.target.checked)" /></td>
               <td class="td-warn">
                 <el-tooltip
                   v-if="needOwnerRemarkWarn(r)"
@@ -930,6 +965,13 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-bottom: 10px;
 }
+.selected-count {
+  color: var(--el-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  align-self: center;
+}
 .table-wrap {
   flex: 1;
   min-height: 0;
@@ -1025,6 +1067,13 @@ onBeforeUnmount(() => {
   padding-right: 4px !important;
   text-align: center;
   vertical-align: middle;
+}
+.td-select {
+  width: 34px;
+  min-width: 34px;
+  text-align: center !important;
+  padding-left: 6px !important;
+  padding-right: 6px !important;
 }
 .owner-remark-warn {
   color: #f56c6c;

@@ -12,6 +12,7 @@ import {
   deleteExcel,
   importXls,
   importSplitXls,
+  exportCityDays,
 } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
 import { isDingSaoRateEnabled, calcScanRatePercent, dingSaoRateByDay, isCityDingSaoRateEnabled, setCityDingSaoRateEnabled } from '../scanRateMode.js'
@@ -36,11 +37,46 @@ const excelFiles = ref([])
 const loadingExcels = ref(false)
 
 const pendingImportDay = ref(null)
+const pendingImportMode = ref('overwrite')
 const detailInputRef = ref(null)
 const excelInputRef = ref(null)
 const splitInputRef = ref(null)
 const splitting = ref(false)
 const rateDrafts = ref({})
+const selectedDayIds = ref([])
+
+function toggleDaySelection(day, checked = null) {
+  const id = String(day.id)
+  const set = new Set(selectedDayIds.value.map(String))
+  const next = checked == null ? !set.has(id) : checked
+  if (next) set.add(id); else set.delete(id)
+  selectedDayIds.value = [...set]
+}
+function onDayCardClick(event, day) {
+  if (event.target?.closest('button, input, .el-input, .el-switch, .el-select, .el-tooltip')) return
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault()
+    if (dayMode(day) !== 'detail') return ElMessage.info('良率多选仅支持验收明细日期')
+    toggleDaySelection(day)
+    return
+  }
+  openDay(day)
+}
+function isSelected(day) { return selectedDayIds.value.includes(String(day.id)) }
+const selectedSummary = computed(() => {
+  const selected = days.value.filter((d) => isSelected(d) && dayMode(d) === 'detail')
+  const total = selected.reduce((sum, d) => sum + (Number(d.record_count) || 0), 0)
+  const miss = selected.reduce((sum, d) => sum + (Number(d.our_miss_count) || 0), 0)
+  const ding = selected.reduce((sum, d) => sum + (isDingSaoRateEnabled(d.id) ? Number(d.ding_sao_found_count) || 0 : 0), 0)
+  return { count: selected.length, total, rate: total ? `${(((total - miss - ding) / total) * 100).toFixed(2)}%` : '—' }
+})
+async function exportSelected() {
+  if (!selectedDayIds.value.length) return ElMessage.warning('请先选择日期')
+  try { const blob = await exportCityDays(props.cityId, selectedDayIds.value); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = '验收明细导出.xlsx'; a.click(); URL.revokeObjectURL(url) } catch (e) { ElMessage.error(e.message) }
+}
+async function exportSelectedDay(day) {
+  try { const blob = await exportCityDays(props.cityId, [day.id]); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `${day.day_date}-验收明细.xlsx`; a.click(); URL.revokeObjectURL(url) } catch (e) { ElMessage.error(e.message) }
+}
 
 function todayStr() {
   const d = new Date()
@@ -223,15 +259,13 @@ async function saveManualRate(day) {
 
 async function startImportDetail(day) {
   if ((day.record_count || 0) > 0) {
-    try {
-      await ElMessageBox.confirm(
+    pendingImportMode.value = await ElMessageBox.confirm(
         '该日期已有验收数据，继续导入将覆盖原有全部记录及已填写内容，是否继续？',
         '覆盖确认',
-        { type: 'warning', confirmButtonText: '继续导入', cancelButtonText: '取消' }
-      )
-    } catch {
-      return
-    }
+        { type: 'warning', confirmButtonText: '覆盖导入', cancelButtonText: '追加导入' }
+      ).then(() => 'overwrite').catch(() => 'append')
+  } else {
+    pendingImportMode.value = 'overwrite'
   }
   pendingImportDay.value = day
   detailInputRef.value?.click()
@@ -265,7 +299,7 @@ async function onDetailFileChange(ev) {
   }
   importingDayId.value = day.id
   try {
-    const r = await importXls(day.id, file)
+    const r = await importXls(day.id, file, { mode: pendingImportMode.value })
     ElMessage.success(`导入成功：共 ${r.total} 条，有效 ${r.imported} 条`)
     await refresh()
     router.push(`/day/${day.id}`)
@@ -313,8 +347,8 @@ function startSplitImport() {
   splitInputRef.value?.click()
 }
 
-async function runSplitImport(files, overwrite) {
-  const r = await importSplitXls(props.cityId, files, { overwrite })
+async function runSplitImport(files, mode) {
+  const r = await importSplitXls(props.cityId, files, { mode })
   const fileCount = r.file_count || files.length
   const lines = (r.days || [])
     .map((d) => `${d.date}：${d.imported} 条${d.created ? '（新建）' : '（覆盖）'}`)
@@ -347,10 +381,10 @@ async function onSplitFileChange(ev) {
   splitting.value = true
   try {
     try {
-      await runSplitImport(files, false)
+      await runSplitImport(files, 'choose')
     } catch (err) {
       if (isAuthCancelled(err)) return
-      if (err.code === 'NEED_CONFIRM' && err.preview) {
+      if ((err.code === 'NEED_MODE' || err.code === 'NEED_CONFIRM') && err.preview) {
         const preview = err.preview
         const fileHint =
           preview.file_count > 1 ? `共 ${preview.file_count} 个文件\n\n` : ''
@@ -360,16 +394,12 @@ async function onSplitFileChange(ev) {
               `${d.date}：${d.count} 条${d.will_overwrite ? '（将覆盖已有）' : '（新建）'}`
           )
           .join('\n')
-        try {
-          await ElMessageBox.confirm(
+        const mode = await ElMessageBox.confirm(
             `${fileHint}${preview.error || '部分日期已存在'}\n\n${lines}\n\n是否继续并覆盖已有验收明细？`,
             '确认拆分导入',
-            { type: 'warning', confirmButtonText: '覆盖并导入', cancelButtonText: '取消' }
-          )
-        } catch {
-          return
-        }
-        await runSplitImport(files, true)
+            { type: 'warning', confirmButtonText: '覆盖并导入', cancelButtonText: '追加导入' }
+          ).then(() => 'overwrite').catch(() => 'append')
+        await runSplitImport(files, mode)
         return
       }
       throw err
@@ -472,7 +502,7 @@ onMounted(refresh)
     <el-card shadow="never" class="page-card">
       <div class="toolbar">
         <div class="toolbar-left">
-          <span class="toolbar-label">日期文件夹（{{ days.length }}）</span>
+          <span class="toolbar-label">日期文件夹（{{ days.length }}）· 按住 Ctrl 点击验收明细可多选</span>
           <label
             v-if="detailDayIds.length"
             class="rate-mode-switch"
@@ -483,6 +513,8 @@ onMounted(refresh)
           </label>
         </div>
         <div class="toolbar-actions">
+          <span v-if="selectedSummary.count" class="selection-summary">已选 {{ selectedSummary.count }} 天 · 累计 {{ selectedSummary.total }} 条 · 良率 {{ selectedSummary.rate }}</span>
+          <el-button v-if="selectedSummary.count" :loading="false" type="success" @click="exportSelected">导出选中</el-button>
           <el-button type="success" :loading="splitting" @click="startSplitImport">
             按日期拆分导入（可多选）
           </el-button>
@@ -515,10 +547,11 @@ onMounted(refresh)
           <el-card
             shadow="hover"
             class="day-card"
-            :class="{ 'day-card-active': String(highlightDayId) === String(d.id) }"
+            :class="{ 'day-card-active': String(highlightDayId) === String(d.id), 'day-card-selected': isSelected(d) }"
             :data-day-id="d.id"
+            @click="onDayCardClick($event, d)"
           >
-            <div class="day-date" @click="openDay(d)">
+            <div class="day-date">
               <el-tooltip
                 v-if="Number(d.owner_no_remark_count) > 0"
                 :content="`有 ${Number(d.owner_no_remark_count)} 条「我方」记录尚未上传备注图片`"
@@ -570,9 +603,10 @@ onMounted(refresh)
 
             <div class="day-actions">
               <template v-if="dayMode(d) === 'detail'">
-                <el-button size="small" type="primary" @click="goDayDetail(d)">
+                <el-button size="small" type="primary" @click.stop="goDayDetail(d)">
                   验收明细
                 </el-button>
+                <el-button size="small" @click.stop="exportSelectedDay(d)">导出</el-button>
               </template>
               <template v-else-if="dayMode(d) === 'excel'">
                 <el-button
@@ -706,6 +740,16 @@ onMounted(refresh)
   border: 2px solid var(--el-color-primary) !important;
   box-shadow: 0 0 0 3px var(--el-color-primary-light-7), 0 8px 20px rgba(31, 58, 95, 0.12);
   transform: translateY(-2px);
+}
+.day-card-selected {
+  border: 2px solid var(--el-color-success) !important;
+  box-shadow: 0 0 0 3px var(--el-color-success-light-7);
+}
+.selection-summary {
+  color: var(--el-color-success);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 .day-card :deep(.el-card__body) {
   flex: 1;

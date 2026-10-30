@@ -89,20 +89,20 @@ export const deleteDay = (dayId) => writeRequest(`/api/days/${dayId}`, { method:
 
 // 某天的数据
 export const getDay = (dayId) => request(`/api/days/${dayId}`)
-export const importXls = async (dayId, file) => {
+export const importXls = async (dayId, file, { mode = 'overwrite' } = {}) => {
   await ensureAuth()
   const form = new FormData()
   form.append('file', file)
-  return request(`/api/days/${dayId}/import`, { method: 'POST', body: form })
+  return request(`/api/days/${dayId}/import?mode=${encodeURIComponent(mode)}`, { method: 'POST', body: form })
 }
 
 /** 城市级按操作时间拆分导入（可多文件）；overwrite=true 时覆盖已有验收明细日期 */
-export const importSplitXls = async (cityId, files, { overwrite = false } = {}) => {
+export const importSplitXls = async (cityId, files, { mode = 'choose' } = {}) => {
   await ensureAuth()
   const list = Array.isArray(files) ? files : [files]
   const form = new FormData()
   for (const f of list) form.append('files', f)
-  const q = overwrite ? '?overwrite=1' : ''
+  const q = `?mode=${encodeURIComponent(mode)}`
   const headers = {}
   if (token.value) headers.Authorization = `Bearer ${token.value}`
   const res = await fetch(`/api/cities/${cityId}/import-split${q}`, {
@@ -115,9 +115,9 @@ export const importSplitXls = async (cityId, files, { overwrite = false } = {}) 
     clearSession()
     throw new Error(data.error || '请先登录后再修改数据')
   }
-  if (res.status === 409 && data.need_confirm) {
+  if (res.status === 409 && (data.need_confirm || data.need_mode)) {
     const err = new Error(data.error || '需要确认覆盖')
-    err.code = 'NEED_CONFIRM'
+    err.code = data.need_mode ? 'NEED_MODE' : 'NEED_CONFIRM'
     err.preview = data
     throw err
   }
@@ -125,6 +125,20 @@ export const importSplitXls = async (cityId, files, { overwrite = false } = {}) 
   return data
 }
 export const getStats = (dayId) => request(`/api/days/${dayId}/stats`)
+export const getCityAggregate = (cityId, dayIds) => {
+  const q = new URLSearchParams({ day_ids: (dayIds || []).join(',') })
+  return request(`/api/cities/${cityId}/aggregate?${q}`)
+}
+export async function exportCityDays(cityId, dayIds) {
+  await ensureAuth()
+  const q = new URLSearchParams({ day_ids: (dayIds || []).join(',') })
+  const res = await fetch(`/api/cities/${cityId}/export-days?${q}`, { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} })
+  if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.error || `导出失败 (${res.status})`) }
+  return res.blob()
+}
+export const listTrash = () => request('/api/trash')
+export const restoreTrash = (id) => writeRequest(`/api/trash/${id}/restore`, { method: 'POST' })
+export const purgeTrash = (id) => writeRequest(`/api/trash/${id}`, { method: 'DELETE' })
 export const listRecords = (dayId, category, keyword, page = 1, pageSize = 50) => {
   const q = new URLSearchParams({ category, keyword, page, pageSize })
   return request(`/api/days/${dayId}/records?${q}`)
@@ -147,6 +161,16 @@ export const updateRecordReason = (id, reason_note) =>
   writeRequest(`/api/records/${id}/reason`, {
     method: 'PATCH',
     body: JSON.stringify({ reason_note }),
+  })
+export const updateRecordsReason = (dayId, ids, reason_note) =>
+  writeRequest(`/api/days/${dayId}/records/reason`, {
+    method: 'PATCH',
+    body: JSON.stringify({ ids, reason_note }),
+  })
+export const trashRecords = (dayId, ids) =>
+  writeRequest(`/api/days/${dayId}/records/trash`, {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
   })
 
 export const updateProblemOwner = (id, problem_owner) =>
