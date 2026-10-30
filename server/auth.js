@@ -120,9 +120,13 @@ export function logout(token) {
   const session = sessions.get(token)
   sessions.delete(token)
   if (session && sessionsByUser.get(session.userId) === token) sessionsByUser.delete(session.userId)
-  if (session) {
-    pool.query('UPDATE app_user SET active_session_token = NULL, session_created_at = NULL WHERE id = ? AND active_session_token = ?', [session.userId, token]).catch(() => {})
-  }
+  // 即使服务重启后内存中没有会话，也必须按 token 清理数据库锁。
+  pool.query(
+    session
+      ? 'UPDATE app_user SET active_session_token = NULL, session_created_at = NULL WHERE id = ? AND active_session_token = ?'
+      : 'UPDATE app_user SET active_session_token = NULL, session_created_at = NULL WHERE active_session_token = ?',
+    session ? [session.userId, token] : [token]
+  ).catch(() => {})
 }
 
 export function getSession(token) {
