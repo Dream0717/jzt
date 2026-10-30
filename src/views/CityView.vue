@@ -705,6 +705,12 @@ onMounted(refresh)
   margin-left: 0 !important;
   margin-right: 0 !important;
 }
+.page-card {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--el-bg-color);
+}
 .hidden-file {
   display: none;
 }

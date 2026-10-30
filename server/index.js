@@ -812,10 +812,12 @@ app.get(
 )
 
 app.get('/api/reason-categories', requireLogin, h(async (req, res) => {
+  if (req.user.username !== 'dream') return res.status(403).json({ error: '仅 dream 账号可查看原因类型' })
   const [rows] = await pool.query(
     `SELECT r.category, COUNT(*) AS count, COALESCE(s.warn_no_remark, 0) AS warn_no_remark
      FROM scan_record r
      LEFT JOIN reason_category_setting s ON s.category = r.category
+     WHERE r.category IS NOT NULL AND r.category NOT IN ('空', '海康无记录')
      GROUP BY r.category, s.warn_no_remark
      ORDER BY count DESC, r.category`
   )
@@ -823,6 +825,7 @@ app.get('/api/reason-categories', requireLogin, h(async (req, res) => {
 }))
 
 app.patch('/api/reason-categories/:category', requireLogin, h(async (req, res) => {
+  if (req.user.username !== 'dream') return res.status(403).json({ error: '仅 dream 账号可修改原因类型设置' })
   const category = decodeURIComponent(String(req.params.category || '')).trim().slice(0, 255)
   if (!category) return res.status(400).json({ error: '原因类型不能为空' })
   const warn = req.body?.warn_no_remark ? 1 : 0

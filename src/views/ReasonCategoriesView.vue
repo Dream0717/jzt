@@ -3,9 +3,11 @@ import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listReasonCategories, updateReasonCategorySetting } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
+import { useRouter } from 'vue-router'
 
 const loading = ref(false)
 const rows = ref([])
+const router = useRouter()
 
 async function load() {
   loading.value = true
@@ -39,7 +41,7 @@ onMounted(load)
         <h2>原因类型</h2>
         <p class="muted">查看各原因类型数量，并设置没有备注图片时是否显示感叹号。</p>
       </div>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <div class="actions"><el-button @click="router.back()">返回</el-button><el-button :loading="loading" @click="load">刷新</el-button></div>
     </div>
     <el-table v-loading="loading" :data="rows" border stripe>
       <el-table-column prop="category" label="原因类型" min-width="260" />
