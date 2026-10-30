@@ -530,7 +530,7 @@ onMounted(refresh)
     <el-card shadow="never" class="page-card">
       <div class="toolbar">
         <div class="toolbar-left">
-          <span class="toolbar-label">日期文件夹（{{ days.length }}）· 按住 Ctrl 点击验收明细可多选</span>
+          <span class="toolbar-label">日期文件夹（{{ days.length }}）</span>
           <label
             v-if="detailDayIds.length"
             class="rate-mode-switch"
@@ -557,7 +557,7 @@ onMounted(refresh)
         <el-tooltip
           :disabled="dayMode(d) !== 'detail' || !(d.record_count > 0)"
           placement="top"
-          :show-after="250"
+          :show-after="2000"
         >
           <template #content>
             <div class="cat-tip">
