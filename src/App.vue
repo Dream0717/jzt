@@ -105,7 +105,6 @@ function submitAuth() {
               操作日志
             </el-button>
             <el-button
-              v-if="username === 'dream'"
               size="small"
               :type="route.name === 'reason-categories' ? 'primary' : 'default'"
               @click="router.push('/reason-categories')"
