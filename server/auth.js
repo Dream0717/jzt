@@ -130,10 +130,21 @@ export function getSession(token) {
   return sessions.get(token) || null
 }
 
-export function requireLogin(req, res, next) {
+export async function requireLogin(req, res, next) {
   const header = req.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
-  const session = getSession(token)
+  let session = getSession(token)
+  if (!session && token) {
+    const [rows] = await pool.query(
+      'SELECT id AS userId, username FROM app_user WHERE active_session_token = ? LIMIT 1',
+      [token]
+    )
+    if (rows.length) {
+      session = { userId: rows[0].userId, username: rows[0].username, createdAt: Date.now() }
+      sessions.set(token, session)
+      sessionsByUser.set(session.userId, token)
+    }
+  }
   if (!session) {
     return res.status(401).json({ error: '请先登录后再修改数据' })
   }
