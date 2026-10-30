@@ -522,12 +522,13 @@ onMounted(refresh)
       @change="onSplitFileChange"
     />
 
-    <div class="nav-back">
-      <el-button @click="router.push('/')">← 返回城市列表</el-button>
-      <span class="city-title">{{ cityName }}</span>
-    </div>
+    <div class="city-top-sticky">
+      <div class="nav-back">
+        <el-button @click="router.push('/')">← 返回城市列表</el-button>
+        <span class="city-title">{{ cityName }}</span>
+      </div>
 
-    <el-card shadow="never" class="page-card">
+      <el-card shadow="never" class="page-card">
       <div class="toolbar">
         <div class="toolbar-left">
           <span class="toolbar-label">日期文件夹（{{ days.length }}）</span>
@@ -549,7 +550,8 @@ onMounted(refresh)
           <el-button type="primary" @click="openAdd">+ 添加日期</el-button>
         </div>
       </div>
-    </el-card>
+      </el-card>
+    </div>
 
     <el-empty v-if="!loading && days.length === 0" description="还没有日期文件夹，点击右上角「添加日期」创建" />
     <el-row v-else :gutter="16" class="day-grid">
@@ -705,11 +707,12 @@ onMounted(refresh)
   margin-left: 0 !important;
   margin-right: 0 !important;
 }
-.page-card {
+.city-top-sticky {
   position: sticky;
   top: 0;
   z-index: 20;
   background: var(--el-bg-color);
+  padding-bottom: 8px;
 }
 .hidden-file {
   display: none;
