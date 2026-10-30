@@ -829,13 +829,15 @@ app.get('/api/reason-categories/:category/data', requireLogin, h(async (req, res
   const owner = String(req.query.owner || '').trim()
   const city = String(req.query.city || '').trim()
   const date = String(req.query.date || '').trim()
+  const search = String(req.query.search || '').trim()
   const where = [`TRIM(r.reason_note) = ?`]
   const params = [category]
   if (owner) { where.push(`COALESCE(NULLIF(r.problem_owner,''),'客户') = ?`); params.push(owner) }
   if (city) { where.push('c.name = ?'); params.push(city) }
   if (date) { where.push('d.day_date = ?'); params.push(date) }
+  if (search) { where.push('(r.doc_no LIKE ? OR r.serial_no LIKE ? OR r.goods_name LIKE ? OR r.reason_note LIKE ? OR CAST(r.id AS CHAR) LIKE ?)'); params.push(...Array(5).fill(`%${search}%`)) }
   const [rows] = await pool.query(
-    `SELECT r.id, c.name AS city, d.day_date, r.doc_no, r.serial_no, r.goods_name, r.reason_note, r.problem_owner, (r.remark_image_path IS NOT NULL AND r.remark_image_path <> '') AS has_remark_image
+    `SELECT r.id, r.day_id, c.name AS city, d.day_date, r.doc_no, r.serial_no, r.goods_name, r.reason_note, r.problem_owner, (r.remark_image_path IS NOT NULL AND r.remark_image_path <> '') AS has_remark_image
      FROM scan_record r JOIN acceptance_day d ON d.id=r.day_id JOIN city c ON c.id=d.city_id
      WHERE ${where.join(' AND ')} ORDER BY c.name, d.day_date, r.id`, params)
   const cities = [...new Set(rows.map(x => x.city))]
@@ -872,6 +874,7 @@ app.get(
     if (keyword) {
       const kw = `%${keyword}%`
       where.push(`(
+        CAST(id AS CHAR) LIKE ? OR
         COALESCE(NULLIF(doc_no, ''), doc_head_id) LIKE ?
         OR doc_head_id LIKE ?
         OR doc_no LIKE ?
@@ -889,7 +892,7 @@ app.get(
         OR problem_owner LIKE ?
         OR CAST(op_time AS CHAR) LIKE ?
       )`)
-      params.push(kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw)
+      params.push(kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw, kw)
     }
     const whereSql = where.join(' AND ')
     const limit = Math.min(Number(pageSize) || 50, 500)
