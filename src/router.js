@@ -27,6 +27,12 @@ const router = createRouter({
       name: 'reason-categories',
       component: () => import('./views/ReasonCategoriesView.vue'),
     },
+    {
+      path: '/reason-categories/:category',
+      name: 'reason-category-detail',
+      component: () => import('./views/ReasonCategoryDetailView.vue'),
+      props: (route) => ({ category: route.params.category, owner: route.query.owner || '客户' }),
+    },
   ],
 })
 
