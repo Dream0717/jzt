@@ -129,9 +129,9 @@ export const getCityAggregate = (cityId, dayIds) => {
   const q = new URLSearchParams({ day_ids: (dayIds || []).join(',') })
   return request(`/api/cities/${cityId}/aggregate?${q}`)
 }
-export async function exportCityDays(cityId, dayIds) {
+export async function exportCityDays(cityId, dayIds, dingSaoIds = []) {
   await ensureAuth()
-  const q = new URLSearchParams({ day_ids: (dayIds || []).join(',') })
+  const q = new URLSearchParams({ day_ids: (dayIds || []).join(','), ding_sao_ids: (dingSaoIds || []).join(',') })
   const res = await fetch(`/api/cities/${cityId}/export-days?${q}`, { headers: token.value ? { Authorization: `Bearer ${token.value}` } : {} })
   if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.error || `导出失败 (${res.status})`) }
   return res.blob()

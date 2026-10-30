@@ -72,10 +72,10 @@ const selectedSummary = computed(() => {
 })
 async function exportSelected() {
   if (!selectedDayIds.value.length) return ElMessage.warning('请先选择日期')
-  try { const blob = await exportCityDays(props.cityId, selectedDayIds.value); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = '验收明细导出.xlsx'; a.click(); URL.revokeObjectURL(url) } catch (e) { ElMessage.error(e.message) }
+  try { const dingIds = selectedDayIds.value.filter((id) => isDingSaoRateEnabled(id)); const blob = await exportCityDays(props.cityId, selectedDayIds.value, dingIds); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = '验收明细导出.xlsx'; a.click(); URL.revokeObjectURL(url) } catch (e) { ElMessage.error(e.message) }
 }
 async function exportSelectedDay(day) {
-  try { const blob = await exportCityDays(props.cityId, [day.id]); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `${day.day_date}-验收明细.xlsx`; a.click(); URL.revokeObjectURL(url) } catch (e) { ElMessage.error(e.message) }
+  try { const blob = await exportCityDays(props.cityId, [day.id], isDingSaoRateEnabled(day.id) ? [day.id] : []); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `${day.day_date}-验收明细.xlsx`; a.click(); URL.revokeObjectURL(url) } catch (e) { ElMessage.error(e.message) }
 }
 
 function todayStr() {

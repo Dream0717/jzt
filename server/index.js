@@ -308,29 +308,32 @@ app.get(
   })
 )
 
-app.get('/api/cities/:cityId/aggregate', h(async (req, res) => {
+app.get('/api/cities/:cityId/export-days', h(async (req, res) => {
   const ids = String(req.query.day_ids || '').split(',').map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0)
   if (!ids.length) return res.status(400).json({ error: '请至少选择一个日期' })
+  const dingSaoIds = new Set(String(req.query.ding_sao_ids || '').split(',').map(Number).filter((x) => Number.isInteger(x) && x > 0))
   const placeholders = ids.map(() => '?').join(',')
-  const [[row]] = await pool.query(
-    `SELECT COUNT(*) AS total,
-       SUM(CASE WHEN category = '未提取到监管码' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS our_miss_count,
-       SUM(CASE WHEN category = '海康无记录' AND problem_owner = '我方' THEN 1 ELSE 0 END) AS ding_sao_found_count
-     FROM scan_record WHERE day_id IN (${placeholders})`, ids
-  )
-  const [stats] = await pool.query(
-    `SELECT category, COUNT(*) AS count FROM scan_record WHERE day_id IN (${placeholders}) GROUP BY category ORDER BY (category = '空') DESC, count DESC`, ids
-  )
-  res.json({ day_ids: ids, stats, scan_rate: buildScanRate(row.total, row.our_miss_count, row.ding_sao_found_count) })
-}))
-
-app.get('/api/cities/:cityId/export-days', requireLogin, h(async (req, res) => {
-  const ids = String(req.query.day_ids || '').split(',').map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0)
-  if (!ids.length) return res.status(400).json({ error: '请至少选择一个日期' })
-  const placeholders = ids.map(() => '?').join(',')
+  const [cities] = await pool.query('SELECT name FROM city WHERE id = ?', [req.params.cityId])
+  if (!cities.length) return res.status(404).json({ error: '城市不存在' })
   const [days] = await pool.query(`SELECT id, day_date FROM acceptance_day WHERE city_id = ? AND id IN (${placeholders}) ORDER BY day_date`, [req.params.cityId, ...ids])
+  if (!days.length) return res.status(404).json({ error: '没有可导出的验收明细日期' })
   const wb = new ExcelJS.Workbook(); wb.creator = '九州通读码数据验收'
+  const summary = wb.addWorksheet('良率汇总')
+  summary.columns = [
+    { header: '城市', key: 'city', width: 18 }, { header: '日期', key: 'date', width: 16 },
+    { header: '明细总数', key: 'total', width: 14 }, { header: '未提取到监管码·我方', key: 'our_miss', width: 24 },
+    { header: '海康无记录·我方计入', key: 'ding_sao', width: 22 }, { header: '良率', key: 'rate', width: 14 },
+  ]
+  summary.getRow(1).font = { bold: true }
+  summary.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'D9EAF7' } }
+  let grandTotal = 0; let grandMiss = 0; let grandDing = 0
   for (const day of days) {
+    const rate = await queryDayScanRate(day.id)
+    const includeDing = dingSaoIds.has(Number(day.id))
+    const dingCount = includeDing ? Number(rate.ding_sao_found_count) || 0 : 0
+    const dayRate = Number(rate.total) ? `${(((Number(rate.total) - Number(rate.our_miss_count) - dingCount) / Number(rate.total)) * 100).toFixed(2)}%` : '—'
+    summary.addRow({ city: cities[0].name, date: String(day.day_date).slice(0, 10), total: Number(rate.total) || 0, our_miss: Number(rate.our_miss_count) || 0, ding_sao: dingCount, rate: dayRate })
+    grandTotal += Number(rate.total) || 0; grandMiss += Number(rate.our_miss_count) || 0; grandDing += dingCount
     const [rows] = await pool.query(
       `SELECT COALESCE(NULLIF(doc_no,''), doc_head_id) AS doc_no, serial_no, goods_name, spec, manufacturer, drug_code, operator, op_time, raw_reason, category, reason_note, problem_owner, remark_image_path
        FROM scan_record WHERE day_id = ? ORDER BY op_time DESC, id DESC`, [day.id]
@@ -350,16 +353,20 @@ app.get('/api/cities/:cityId/export-days', requireLogin, h(async (req, res) => {
       if (row.remark_image_path) {
         try {
           const image = await readUpload(row.remark_image_path)
-          const ext = String(row.remark_image_path).toLowerCase().endsWith('.png') ? 'png' : 'jpeg'
+          const imagePath = String(row.remark_image_path).toLowerCase()
+          const ext = imagePath.endsWith('.png') ? 'png' : imagePath.endsWith('.gif') ? 'gif' : 'jpeg'
+          if (imagePath.endsWith('.webp')) throw new Error('Excel 不支持直接嵌入 WebP')
           const imageId = wb.addImage({ buffer: image, extension: ext })
-          ws.addImage(imageId, { tl: { col: 12, row: excelRow.number - 1 }, ext: { width: 90, height: 70 } })
-          excelRow.height = 58
+          ws.addImage(imageId, { tl: { col: 12, row: excelRow.number - 1 }, ext: { width: 90, height: 54 } })
+          excelRow.height = 44
         } catch { /* 图片缺失时保留文字 */ }
       }
     }
     ws.autoFilter = { from: 'A1', to: `M${Math.max(1, ws.rowCount)}` }
   }
-  if (!wb.worksheets.length) wb.addWorksheet('导出')
+  const grandRate = grandTotal ? `${(((grandTotal - grandMiss - grandDing) / grandTotal) * 100).toFixed(2)}%` : '—'
+  summary.addRow({ city: cities[0].name, date: '合计', total: grandTotal, our_miss: grandMiss, ding_sao: grandDing, rate: grandRate })
+  summary.autoFilter = { from: 'A1', to: `F${summary.rowCount - 1}` }
   const buf = await wb.xlsx.writeBuffer()
   res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   res.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('验收明细导出.xlsx')}`)
@@ -1379,11 +1386,11 @@ app.post(
     try {
       await conn.beginTransaction()
       if (overwrite) {
-        const [oldFiles] = await conn.query('SELECT file_path FROM day_excel WHERE day_id = ?', [
+        const [oldFiles] = await conn.query('SELECT * FROM day_excel WHERE day_id = ?', [
           req.params.id,
         ])
         for (const f of oldFiles) {
-          await removeUpload(f.file_path)
+          await addTrashItem(conn, req, 'excel', f.id, f.file_name, { excel: f })
         }
         await conn.query('DELETE FROM day_excel WHERE day_id = ?', [req.params.id])
       }
