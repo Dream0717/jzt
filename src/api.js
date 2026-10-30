@@ -56,6 +56,10 @@ export const listAuditLogs = ({ page = 1, pageSize = 50, keyword = '' } = {}) =>
   return request(`/api/audit-logs?${q}`)
 }
 export const listReasonCategories = () => request('/api/reason-categories')
+export const listReasonCategoryData = (category, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v))
+  return request(`/api/reason-categories/${encodeURIComponent(category)}/data?${q}`)
+}
 export const updateReasonCategorySetting = (category, warnNoRemark) =>
   writeRequest(`/api/reason-categories/${encodeURIComponent(category)}`, {
     method: 'PATCH',

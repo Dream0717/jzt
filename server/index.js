@@ -813,16 +813,34 @@ app.get(
 )
 
 app.get('/api/reason-categories', requireLogin, h(async (req, res) => {
-  if (req.user.username !== 'dream') return res.status(403).json({ error: '仅 dream 账号可查看原因类型' })
   const [rows] = await pool.query(
-    `SELECT TRIM(r.reason_note) AS category, COUNT(*) AS count, COALESCE(s.warn_no_remark, 0) AS warn_no_remark
+    `SELECT COALESCE(NULLIF(r.problem_owner,''),'客户') AS owner, TRIM(r.reason_note) AS category, COUNT(*) AS count, COALESCE(s.warn_no_remark, 0) AS warn_no_remark
      FROM scan_record r
      LEFT JOIN reason_category_setting s ON s.category = TRIM(r.reason_note)
      WHERE r.reason_note IS NOT NULL AND TRIM(r.reason_note) <> ''
-     GROUP BY TRIM(r.reason_note), s.warn_no_remark
-     ORDER BY count DESC, category`
+     GROUP BY owner, TRIM(r.reason_note), s.warn_no_remark
+     ORDER BY owner, count DESC, category`
   )
   res.json({ categories: rows })
+}))
+
+app.get('/api/reason-categories/:category/data', requireLogin, h(async (req, res) => {
+  const category = decodeURIComponent(String(req.params.category || '')).trim()
+  const owner = String(req.query.owner || '').trim()
+  const city = String(req.query.city || '').trim()
+  const date = String(req.query.date || '').trim()
+  const where = [`TRIM(r.reason_note) = ?`]
+  const params = [category]
+  if (owner) { where.push(`COALESCE(NULLIF(r.problem_owner,''),'客户') = ?`); params.push(owner) }
+  if (city) { where.push('c.name = ?'); params.push(city) }
+  if (date) { where.push('d.day_date = ?'); params.push(date) }
+  const [rows] = await pool.query(
+    `SELECT r.id, c.name AS city, d.day_date, r.doc_no, r.serial_no, r.goods_name, r.reason_note, r.problem_owner, (r.remark_image_path IS NOT NULL AND r.remark_image_path <> '') AS has_remark_image
+     FROM scan_record r JOIN acceptance_day d ON d.id=r.day_id JOIN city c ON c.id=d.city_id
+     WHERE ${where.join(' AND ')} ORDER BY c.name, d.day_date, r.id`, params)
+  const cities = [...new Set(rows.map(x => x.city))]
+  const dates = [...new Set(rows.map(x => x.day_date))]
+  res.json({ rows, cities, dates })
 }))
 
 app.patch('/api/reason-categories/:category', requireLogin, h(async (req, res) => {
