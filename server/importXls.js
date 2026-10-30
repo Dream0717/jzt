@@ -12,8 +12,11 @@ const COLUMN_MAP = {
   生产厂家: 'manufacturer',
   操作员: 'operator',
   操作时间: 'op_time',
+  记录时间: 'op_time',
   商品内码: 'goods_inner_no',
   补扫原因: 'raw_reason',
+  备注: 'raw_reason',
+  出库条码: 'serial_no',
 }
 
 /** 把 "2.0201E+14" / "2.02e14" 展开成普通数字字符串；非科学计数法则返回 null */
@@ -86,6 +89,16 @@ export function normalizeOpTime(v) {
   if (v instanceof Date) return fmtDateTime(v)
   const s = String(v ?? '').trim()
   if (!s) return null
+  // 西安海康日志使用 MM/DD/YY，例如 10/22/26 0:00。
+  const shortDate = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})(?:\s+|T)?(\d{1,2})?:?(\d{1,2})?:?(\d{1,2})?$/)
+  if (shortDate) {
+    const year = Number(shortDate[3]) >= 70 ? 1900 + Number(shortDate[3]) : 2000 + Number(shortDate[3])
+    const p = (n) => String(Number(n)).padStart(2, '0')
+    const time = shortDate[4] != null && shortDate[4] !== ''
+      ? `${p(shortDate[4])}:${p(shortDate[5] || 0)}:${p(shortDate[6] || 0)}`
+      : '00:00:00'
+    return `${year}-${p(shortDate[1])}-${p(shortDate[2])} ${time}`
+  }
   const m = s.match(
     /(\d{4})[-\/年.](\d{1,2})[-\/月.](\d{1,2})日?(?:\s+|T)?(\d{1,2})?:?(\d{1,2})?:?(\d{1,2})?/
   )
@@ -96,6 +109,12 @@ export function normalizeOpTime(v) {
     ? `${p(m[4])}:${p(m[5] || 0)}:${p(m[6] || 0)}`
     : '00:00:00'
   return `${m[1]}-${p(m[2])}-${p(m[3])} ${time}`
+}
+
+function hasMultipleSerials(value) {
+  const s = String(value || '').trim()
+  if (!s) return false
+  return s.split(/[\r\n,，、;；|]+/).map((x) => x.trim()).filter(Boolean).length > 1
 }
 
 /** 从操作时间取日期键 YYYY-MM-DD */
@@ -181,7 +200,10 @@ export function parseHikDetail(buffer) {
     })
     // 广州等导出缺「业务单据编号」时，用单据抬头ID 顶上，方便列表展示/搜索
     if (!rec.doc_no && rec.doc_head_id) rec.doc_no = rec.doc_head_id
-    if (!rec.goods_name && !rec.doc_no && !rec.drug_code) continue // 跳过完全空的行
+    // 西安日志没有商品/单据字段：只要有时间、流水号或补扫原因，也属于有效日志行。
+    if (!rec.goods_name && !rec.doc_no && !rec.drug_code && !rec.serial_no && !rec.raw_reason && !rec.op_time) continue
+    // 出库条码含多个值时，备注为空的行没有可归类依据，按需求丢弃；有备注则保留原始条码文本。
+    if (hasMultipleSerials(rec.serial_no) && !String(rec.raw_reason || '').trim()) continue
     rec.category = normalizeCategory(rec.raw_reason)
     records.push(rec)
   }
