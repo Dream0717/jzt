@@ -53,7 +53,7 @@ function toggleDaySelection(day, checked = null) {
   selectedDayIds.value = [...set]
 }
 function onDayCardClick(event, day) {
-  if (event.target?.closest('button, input, .el-input, .el-switch, .el-select, .el-tooltip')) return
+  if (event.target?.closest('button, input, .el-input, .el-switch, .el-select')) return
   if (event.ctrlKey || event.metaKey) {
     event.preventDefault()
     if (dayMode(day) !== 'detail') return ElMessage.info('良率多选仅支持验收明细日期')
