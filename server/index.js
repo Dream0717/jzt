@@ -141,6 +141,7 @@ app.post(
     const username = String(req.body?.username || '').trim()
     const password = String(req.body?.password || '')
     const session = await login(username, password)
+    if (session?.error) return res.status(session.status || 400).json({ error: session.error })
     if (!session) return res.status(401).json({ error: '账号或密码错误' })
     await writeAudit(
       { user: { userId: session.userId, username: session.username }, headers: req.headers, socket: req.socket },
@@ -181,6 +182,7 @@ app.get(
   '/api/audit-logs',
   requireLogin,
   h(async (req, res) => {
+    if (req.user.username !== 'dream') return res.status(403).json({ error: '只有 dream 账号可以查看操作日志' })
     const page = Math.max(1, Number(req.query.page) || 1)
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 50))
     const keyword = String(req.query.keyword || '').trim()

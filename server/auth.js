@@ -3,6 +3,7 @@ import { pool } from './db.js'
 
 /** token -> { userId, username, createdAt } */
 const sessions = new Map()
+const sessionsByUser = new Map()
 
 /** 账号：2–32 位，中文/字母/数字/下划线 */
 export function validateUsername(username) {
@@ -80,6 +81,9 @@ export async function login(username, password) {
   )
   if (!rows.length) return null
   if (!verifyPassword(pass, rows[0].password_hash)) return null
+  if (sessionsByUser.has(rows[0].id)) {
+    return { error: '账号已经被其他设备登录', status: 409 }
+  }
   return createSession(rows[0].id, rows[0].username)
 }
 
@@ -87,11 +91,15 @@ function createSession(userId, username) {
   const token = crypto.randomBytes(24).toString('hex')
   const session = { userId, username, createdAt: Date.now() }
   sessions.set(token, session)
+  sessionsByUser.set(userId, token)
   return { token, username, userId }
 }
 
 export function logout(token) {
-  if (token) sessions.delete(token)
+  if (!token) return
+  const session = sessions.get(token)
+  sessions.delete(token)
+  if (session && sessionsByUser.get(session.userId) === token) sessionsByUser.delete(session.userId)
 }
 
 export function getSession(token) {

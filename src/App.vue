@@ -96,6 +96,7 @@ function submitAuth() {
         <div class="header-right">
           <template v-if="isLoggedIn">
             <el-button
+              v-if="username === 'dream'"
               size="small"
               :type="route.name === 'logs' ? 'primary' : 'default'"
               @click="router.push('/logs')"
