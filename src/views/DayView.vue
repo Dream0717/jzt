@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, computed, watch, nextTick, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getDay,
@@ -26,6 +26,8 @@ import { rememberOpenedDay } from '../dayHighlight.js'
 
 const props = defineProps({ dayId: String })
 const router = useRouter()
+const route = useRoute()
+const highlightRecordId = ref('')
 
 const day = ref(null)
 const scanRate = ref({
@@ -152,6 +154,14 @@ async function refreshRecords({ scrollTop = false } = {}) {
     }))
     total.value = data.total
     jumpPage.value = page.value
+    const targetId = String(route.query.recordId || '')
+    const hit = targetId && records.value.find((r) => String(r.id) === targetId)
+    if (hit) {
+      highlightRecordId.value = targetId
+      await nextTick()
+      document.querySelector(`[data-record-id="${targetId}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      window.setTimeout(() => { if (highlightRecordId.value === targetId) highlightRecordId.value = '' }, 3000)
+    }
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -580,6 +590,7 @@ watch(page, (p) => {
 const tableWrap = ref(null)
 
 onMounted(async () => {
+  if (route.query.recordId) keyword.value = String(route.query.recordId)
   await refreshBase()
   await refreshRecords()
 })
@@ -701,7 +712,9 @@ onBeforeUnmount(() => {
                 'row-copied': copiedId === r.id,
                 'row-our-problem': r.problem_owner === '我方',
                 'row-ding-sao-found': String(r.reason_note || '').trim() === '顶扫有记录',
+                'row-route-highlight': highlightRecordId === String(r.id),
               }"
+              :data-record-id="r.id"
               :style="rowStyleOf(r)"
             >
               <td class="td-select"><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" @change="toggleRecord(r, $event.target.checked)" /></td>
@@ -1159,3 +1172,5 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 </style>
+
+<style scoped>.rec-table tbody tr.row-route-highlight td{box-shadow:inset 0 0 0 3px #f56c6c!important;animation:routeFlash .5s ease-in-out 6}@keyframes routeFlash{50%{background:#ffe0e0}}</style>
