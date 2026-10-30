@@ -44,6 +44,7 @@ const splitInputRef = ref(null)
 const splitting = ref(false)
 const rateDrafts = ref({})
 const selectedDayIds = ref([])
+const selectionAnchorId = ref('')
 
 function toggleDaySelection(day, checked = null) {
   const id = String(day.id)
@@ -51,16 +52,43 @@ function toggleDaySelection(day, checked = null) {
   const next = checked == null ? !set.has(id) : checked
   if (next) set.add(id); else set.delete(id)
   selectedDayIds.value = [...set]
+  selectionAnchorId.value = id
 }
 function onDayCardClick(event, day) {
   if (event.target?.closest('button, input, .el-input, .el-switch, .el-select')) return
+  if (dayMode(day) !== 'detail') {
+    if (selectedDayIds.value.length) selectedDayIds.value = []
+    else openDay(day)
+    return
+  }
+  if (event.shiftKey) {
+    event.preventDefault()
+    const detailDays = days.value.filter((item) => dayMode(item) === 'detail')
+    const anchor = detailDays.findIndex((item) => String(item.id) === String(selectionAnchorId.value))
+    const target = detailDays.findIndex((item) => String(item.id) === String(day.id))
+    if (anchor < 0) toggleDaySelection(day)
+    else {
+      const [start, end] = anchor <= target ? [anchor, target] : [target, anchor]
+      selectedDayIds.value = detailDays.slice(start, end + 1).map((item) => String(item.id))
+    }
+    return
+  }
   if (event.ctrlKey || event.metaKey) {
     event.preventDefault()
-    if (dayMode(day) !== 'detail') return ElMessage.info('良率多选仅支持验收明细日期')
     toggleDaySelection(day)
     return
   }
+  if (selectedDayIds.value.length) {
+    if (isSelected(day)) toggleDaySelection(day, false)
+    else ElMessage.info('当前处于多选状态，请按 Ctrl 选择或点击已选日期取消')
+    return
+  }
   openDay(day)
+}
+function onCityPageClick(event) {
+  if (event.target?.closest('.day-card, button, input, .el-input, .el-switch, .el-select, .el-dialog')) return
+  selectedDayIds.value = []
+  selectionAnchorId.value = ''
 }
 function isSelected(day) { return selectedDayIds.value.includes(String(day.id)) }
 const selectedSummary = computed(() => {
@@ -470,7 +498,7 @@ onMounted(refresh)
 </script>
 
 <template>
-  <div class="page" v-loading="loading">
+  <div class="page" v-loading="loading" @click="onCityPageClick">
     <input
       ref="detailInputRef"
       type="file"
