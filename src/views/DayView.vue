@@ -439,6 +439,8 @@ async function saveReason(r) {
       if (data.scan_rate) scanRate.value = data.scan_rate
       await refreshReasonOptions(r.category)
       ElMessage.success(`已同步原因至 ${data.affected} 条选中明细`)
+      // 批量联动修改完成后立即退出多选状态，避免后续编辑误同步。
+      selectedRecordIds.value = []
       return
     }
     const data = await updateRecordReason(r.id, r.reason_note || '')
