@@ -82,6 +82,8 @@ export const listCities = () => request('/api/cities')
 export const createCity = (name) =>
   writeRequest('/api/cities', { method: 'POST', body: JSON.stringify({ name }) })
 export const deleteCity = (id) => writeRequest(`/api/cities/${id}`, { method: 'DELETE' })
+export const updateSunloginCode = (id, code) =>
+  writeRequest(`/api/cities/${id}/sunlogin-code`, { method: 'PATCH', body: JSON.stringify({ sunlogin_code: code }) })
 
 // 日期文件夹
 export const listDays = (cityId) => request(`/api/cities/${cityId}/days`)

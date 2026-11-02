@@ -216,7 +216,7 @@ app.get(
   '/api/cities',
   h(async (req, res) => {
     const [rows] = await pool.query(
-      `SELECT c.id, c.name, c.created_at, COUNT(d.id) AS day_count
+      `SELECT c.id, c.name, c.sunlogin_code, c.created_at, COUNT(d.id) AS day_count
        FROM city c LEFT JOIN acceptance_day d ON d.city_id = c.id
        GROUP BY c.id, c.name, c.created_at
        ORDER BY c.id`
@@ -224,6 +224,14 @@ app.get(
     res.json({ cities: rows })
   })
 )
+
+app.patch('/api/cities/:id/sunlogin-code', requireLogin, h(async (req, res) => {
+  const code = String(req.body?.sunlogin_code || '').trim().slice(0, 128)
+  const [r] = await pool.query('UPDATE city SET sunlogin_code = ? WHERE id = ?', [code || null, req.params.id])
+  if (!r.affectedRows) return res.status(404).json({ error: '城市不存在' })
+  await writeAudit(req, '修改向日葵远程码', { city_id: Number(req.params.id), sunlogin_code: code })
+  res.json({ ok: true, sunlogin_code: code })
+}))
 
 app.post(
   '/api/cities',

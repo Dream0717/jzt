@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listCities, createCity, deleteCity } from '../api.js'
+import { listCities, createCity, deleteCity, updateSunloginCode } from '../api.js'
 import { isAuthCancelled } from '../auth.js'
 
 const router = useRouter()
@@ -59,6 +59,10 @@ async function removeCity(city) {
     ElMessage.error(e.message)
   }
 }
+async function saveSunloginCode(city) {
+  try { const r = await updateSunloginCode(city.id, city.sunlogin_code || ''); city.sunlogin_code = r.sunlogin_code; ElMessage.success('向日葵远程码已保存') }
+  catch (e) { if (!isAuthCancelled(e)) ElMessage.error(e.message) }
+}
 
 onMounted(refresh)
 </script>
@@ -85,6 +89,7 @@ onMounted(refresh)
         <el-card shadow="hover" class="city-card" @click="router.push(`/city/${c.id}`)">
           <div class="city-name">{{ c.name }}</div>
           <div class="city-meta">{{ c.day_count || 0 }} 个日期文件夹</div>
+          <el-input v-model="c.sunlogin_code" size="small" clearable placeholder="向日葵远程码（可选）" @click.stop @keyup.enter.stop="saveSunloginCode(c)" @blur="saveSunloginCode(c)" />
           <el-button type="danger" plain size="small" @click.stop="removeCity(c)">删除</el-button>
         </el-card>
       </el-col>

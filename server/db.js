@@ -134,6 +134,7 @@ const MIGRATE_SQL = [
   `ALTER TABLE acceptance_day ADD COLUMN manual_scan_rate VARCHAR(32) DEFAULT NULL`,
   `ALTER TABLE app_user ADD COLUMN active_session_token VARCHAR(128) DEFAULT NULL`,
   `ALTER TABLE app_user ADD COLUMN session_created_at DATETIME DEFAULT NULL`,
+  `ALTER TABLE city ADD COLUMN sunlogin_code VARCHAR(128) DEFAULT NULL`,
   `ALTER TABLE day_excel ADD COLUMN file_path VARCHAR(512) DEFAULT NULL`,
   `ALTER TABLE day_excel MODIFY COLUMN file_data LONGBLOB NULL`,
   `UPDATE scan_record SET problem_owner = '我方' WHERE category = '未提取到监管码' AND (problem_owner IS NULL OR problem_owner = '')`,
