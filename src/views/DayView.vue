@@ -210,18 +210,17 @@ function startRecordDrag(r, event) {
   const index = ids.indexOf(r.id)
   const anchor = recordSelectionAnchor.value == null ? -1 : ids.indexOf(recordSelectionAnchor.value)
   if (event.shiftKey && anchor >= 0) {
-    const [start, end] = anchor <= index ? [anchor, index] : [index, anchor]
-    selectedRecordIds.value = [...new Set([...selectedRecordIds.value, ...ids.slice(start, end + 1)])]
     recordDragMode.value = 'add'
   } else {
     recordSelectionAnchor.value = r.id
     recordDragMode.value = selectedRecordIds.value.includes(r.id) ? 'remove' : 'add'
-    const set = new Set(selectedRecordIds.value)
-    recordDragMode.value === 'add' ? set.add(r.id) : set.delete(r.id)
-    selectedRecordIds.value = [...set]
   }
 }
 function clickRecordCheckbox(r, event) {
+  if (recordDragMoved.value) {
+    recordDragMoved.value = false
+    return
+  }
   const ids = records.value.map((item) => item.id)
   const index = ids.indexOf(r.id)
   if (index < 0) return
@@ -374,6 +373,24 @@ async function copySerial(r) {
   }
   copiedId.value = r.id
   ElMessage.success({ message: '已复制条码流水号', duration: 1000 })
+}
+
+async function copyDrugCode(r) {
+  const text = r.drug_code == null ? '' : String(r.drug_code)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.left = '-9999px'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+  ElMessage.success({ message: '已复制监管码', duration: 1000 })
 }
 
 const reasonOptionsByCat = ref({})
@@ -800,9 +817,10 @@ window.addEventListener('mouseup', endRecordDrag)
             >
               <td
                 class="td-select record-select-cell"
-                @mousedown="startRecordDrag(r, $event)"
+                @mousedown.prevent="startRecordDrag(r, $event)"
                 @mouseenter="dragOverRecord(r)"
-              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @click.prevent.stop /></td>
+                @click.prevent="clickRecordCheckbox(r, $event)"
+              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @click.prevent.stop="clickRecordCheckbox(r, $event)" /></td>
               <td class="td-warn">
                 <el-tooltip
                   v-if="needOwnerRemarkWarn(r)"
@@ -829,7 +847,7 @@ window.addEventListener('mouseup', endRecordDrag)
               <td>{{ r.goods_name }}</td>
               <td>{{ r.spec }}</td>
               <td class="td-ellipsis" :title="r.manufacturer">{{ r.manufacturer }}</td>
-              <td class="mono">{{ r.drug_code }}</td>
+              <td class="mono" @dblclick.prevent="copyDrugCode(r)">{{ r.drug_code }}</td>
               <td>{{ r.operator }}</td>
               <td class="mono">{{ fmtTime(r.op_time) }}</td>
               <td>
