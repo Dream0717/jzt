@@ -203,6 +203,14 @@ function startRecordDrag(r, event) {
   recordDragging.value = true
   selectRecordByGesture(r, event)
 }
+function clickRecordCheckbox(r, event) {
+  if (!event.shiftKey && !event.ctrlKey && !event.metaKey && selectedRecordIds.value.includes(r.id)) {
+    selectedRecordIds.value = selectedRecordIds.value.filter((id) => id !== r.id)
+    recordSelectionAnchor.value = r.id
+    return
+  }
+  selectRecordByGesture(r, event)
+}
 function dragOverRecord(r) {
   if (!recordDragging.value || recordSelectionAnchor.value == null) return
   const ids = records.value.map((x) => x.id)
@@ -758,7 +766,7 @@ window.addEventListener('mouseup', endRecordDrag)
                 class="td-select record-select-cell"
                 @mousedown.prevent="startRecordDrag(r, $event)"
                 @mouseenter="dragOverRecord(r)"
-              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @click.prevent="selectRecordByGesture(r, $event)" /></td>
+              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @click.prevent="clickRecordCheckbox(r, $event)" /></td>
               <td class="td-warn">
                 <el-tooltip
                   v-if="needOwnerRemarkWarn(r)"
