@@ -204,14 +204,22 @@ function selectRecordByGesture(r, event) {
 }
 function startRecordDrag(r, event) {
   if (event.button !== 0) return
-  if (event.target?.closest('input')) return
   recordDragging.value = true
   recordDragMoved.value = false
-  recordSelectionAnchor.value = r.id
-  recordDragMode.value = selectedRecordIds.value.includes(r.id) ? 'remove' : 'add'
-  const set = new Set(selectedRecordIds.value)
-  recordDragMode.value === 'add' ? set.add(r.id) : set.delete(r.id)
-  selectedRecordIds.value = [...set]
+  const ids = records.value.map((item) => item.id)
+  const index = ids.indexOf(r.id)
+  const anchor = recordSelectionAnchor.value == null ? -1 : ids.indexOf(recordSelectionAnchor.value)
+  if (event.shiftKey && anchor >= 0) {
+    const [start, end] = anchor <= index ? [anchor, index] : [index, anchor]
+    selectedRecordIds.value = [...new Set([...selectedRecordIds.value, ...ids.slice(start, end + 1)])]
+    recordDragMode.value = 'add'
+  } else {
+    recordSelectionAnchor.value = r.id
+    recordDragMode.value = selectedRecordIds.value.includes(r.id) ? 'remove' : 'add'
+    const set = new Set(selectedRecordIds.value)
+    recordDragMode.value === 'add' ? set.add(r.id) : set.delete(r.id)
+    selectedRecordIds.value = [...set]
+  }
 }
 function clickRecordCheckbox(r, event) {
   const ids = records.value.map((item) => item.id)
@@ -794,7 +802,7 @@ window.addEventListener('mouseup', endRecordDrag)
                 class="td-select record-select-cell"
                 @mousedown="startRecordDrag(r, $event)"
                 @mouseenter="dragOverRecord(r)"
-              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @mousedown.stop @click.stop.prevent="clickRecordCheckbox(r, $event)" /></td>
+              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @click.prevent.stop /></td>
               <td class="td-warn">
                 <el-tooltip
                   v-if="needOwnerRemarkWarn(r)"
