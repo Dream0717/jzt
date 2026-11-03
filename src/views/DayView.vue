@@ -43,6 +43,8 @@ const keyword = ref('')
 let searchTimer = null
 const records = ref([])
 const selectedRecordIds = ref([])
+const recordSelectionAnchor = ref(null)
+const recordDragging = ref(false)
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
@@ -178,6 +180,37 @@ function toggleRecord(r, checked) {
   if (checked) set.add(r.id); else set.delete(r.id)
   selectedRecordIds.value = [...set]
 }
+function selectRecordByGesture(r, event) {
+  const ids = records.value.map((x) => x.id)
+  const idx = ids.indexOf(r.id)
+  if (idx < 0) return
+  if (event.shiftKey && recordSelectionAnchor.value != null) {
+    const anchor = Math.max(0, ids.indexOf(recordSelectionAnchor.value))
+    const [a, b] = anchor <= idx ? [anchor, idx] : [idx, anchor]
+    selectedRecordIds.value = ids.slice(a, b + 1)
+  } else if (event.ctrlKey || event.metaKey) {
+    const set = new Set(selectedRecordIds.value)
+    set.has(r.id) ? set.delete(r.id) : set.add(r.id)
+    selectedRecordIds.value = [...set]
+    recordSelectionAnchor.value = r.id
+  } else {
+    selectedRecordIds.value = [r.id]
+    recordSelectionAnchor.value = r.id
+  }
+}
+function startRecordDrag(r, event) {
+  if (event.button !== 0) return
+  recordDragging.value = true
+  selectRecordByGesture(r, event)
+}
+function dragOverRecord(r) {
+  if (!recordDragging.value || recordSelectionAnchor.value == null) return
+  const ids = records.value.map((x) => x.id)
+  const a = ids.indexOf(recordSelectionAnchor.value), b = ids.indexOf(r.id)
+  if (a < 0 || b < 0) return
+  selectedRecordIds.value = ids.slice(Math.min(a, b), Math.max(a, b) + 1)
+}
+function endRecordDrag() { recordDragging.value = false }
 function toggleAllRecords(checked) {
   selectedRecordIds.value = checked ? records.value.map((r) => r.id) : []
 }
@@ -599,7 +632,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   clearTimeout(searchTimer)
+  window.removeEventListener('mouseup', endRecordDrag)
 })
+window.addEventListener('mouseup', endRecordDrag)
 </script>
 
 <template>
@@ -719,7 +754,11 @@ onBeforeUnmount(() => {
               :data-record-id="r.id"
               :style="rowStyleOf(r)"
             >
-              <td class="td-select"><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" @change="toggleRecord(r, $event.target.checked)" /></td>
+              <td
+                class="td-select record-select-cell"
+                @mousedown.prevent="startRecordDrag(r, $event)"
+                @mouseenter="dragOverRecord(r)"
+              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @click.prevent="selectRecordByGesture(r, $event)" /></td>
               <td class="td-warn">
                 <el-tooltip
                   v-if="needOwnerRemarkWarn(r)"
@@ -1176,3 +1215,5 @@ onBeforeUnmount(() => {
 </style>
 
 <style scoped>.rec-table tbody tr.row-route-highlight td{box-shadow:inset 0 0 0 3px #f56c6c!important;animation:routeFlash .5s ease-in-out 6}@keyframes routeFlash{50%{background:#ffe0e0}}</style>
+
+<style scoped>.record-select-cell{width:38px;min-width:38px;padding:8px 10px!important;cursor:pointer}.record-select-cell input{width:18px;height:18px;cursor:pointer}</style>
