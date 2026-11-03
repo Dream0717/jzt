@@ -46,6 +46,7 @@ const selectedRecordIds = ref([])
 const recordSelectionAnchor = ref(null)
 const recordDragging = ref(false)
 const recordDragMoved = ref(false)
+const recordDragMode = ref('add')
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
@@ -203,34 +204,34 @@ function selectRecordByGesture(r, event) {
 }
 function startRecordDrag(r, event) {
   if (event.button !== 0) return
+  if (event.target?.closest('input')) return
   recordDragging.value = true
-  selectRecordByGesture(r, event)
+  recordDragMoved.value = false
+  recordSelectionAnchor.value = r.id
+  recordDragMode.value = selectedRecordIds.value.includes(r.id) ? 'remove' : 'add'
+  const set = new Set(selectedRecordIds.value)
+  recordDragMode.value === 'add' ? set.add(r.id) : set.delete(r.id)
+  selectedRecordIds.value = [...set]
 }
 function clickRecordCheckbox(r, event) {
-  const checked = event.currentTarget.checked
   const ids = records.value.map((item) => item.id)
   const index = ids.indexOf(r.id)
   if (index < 0) return
-  if (recordDragMoved.value) {
-    recordDragMoved.value = false
-    // Re-apply the bound value after the browser's native checkbox activation.
-    selectedRecordIds.value = [...selectedRecordIds.value]
-    return
-  }
   if (event.shiftKey && recordSelectionAnchor.value != null) {
     const anchor = ids.indexOf(recordSelectionAnchor.value)
     if (anchor < 0) {
-      selectedRecordIds.value = checked ? [r.id] : selectedRecordIds.value.filter((id) => id !== r.id)
       recordSelectionAnchor.value = r.id
+      selectedRecordIds.value = [r.id]
       return
     }
     const [start, end] = anchor <= index ? [anchor, index] : [index, anchor]
-    selectedRecordIds.value = ids.slice(start, end + 1)
+    const set = new Set(selectedRecordIds.value)
+    for (const id of ids.slice(start, end + 1)) set.add(id)
+    selectedRecordIds.value = [...set]
     return
   }
   const selection = new Set(selectedRecordIds.value)
-  if (checked) selection.add(r.id)
-  else selection.delete(r.id)
+  selection.has(r.id) ? selection.delete(r.id) : selection.add(r.id)
   selectedRecordIds.value = [...selection]
   recordSelectionAnchor.value = r.id
 }
@@ -240,7 +241,10 @@ function dragOverRecord(r) {
   const a = ids.indexOf(recordSelectionAnchor.value), b = ids.indexOf(r.id)
   if (a < 0 || b < 0) return
   if (a !== b) recordDragMoved.value = true
-  selectedRecordIds.value = ids.slice(Math.min(a, b), Math.max(a, b) + 1)
+  const range = ids.slice(Math.min(a, b), Math.max(a, b) + 1)
+  const set = new Set(selectedRecordIds.value)
+  for (const id of range) recordDragMode.value === 'add' ? set.add(id) : set.delete(id)
+  selectedRecordIds.value = [...set]
 }
 function endRecordDrag() { recordDragging.value = false }
 function toggleAllRecords(checked) {
@@ -790,7 +794,7 @@ window.addEventListener('mouseup', endRecordDrag)
                 class="td-select record-select-cell"
                 @mousedown="startRecordDrag(r, $event)"
                 @mouseenter="dragOverRecord(r)"
-              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @click.stop="clickRecordCheckbox(r, $event)" /></td>
+              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @mousedown.stop @click.stop.prevent="clickRecordCheckbox(r, $event)" /></td>
               <td class="td-warn">
                 <el-tooltip
                   v-if="needOwnerRemarkWarn(r)"
