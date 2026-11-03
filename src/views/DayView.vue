@@ -205,12 +205,26 @@ function startRecordDrag(r, event) {
   selectRecordByGesture(r, event)
 }
 function clickRecordCheckbox(r, event) {
-  if (!event.shiftKey && !event.ctrlKey && !event.metaKey && selectedRecordIds.value.includes(r.id)) {
-    selectedRecordIds.value = selectedRecordIds.value.filter((id) => id !== r.id)
-    recordSelectionAnchor.value = r.id
+  const checked = event.currentTarget.checked
+  const ids = records.value.map((item) => item.id)
+  const index = ids.indexOf(r.id)
+  if (index < 0) return
+  if (event.shiftKey && recordSelectionAnchor.value != null) {
+    const anchor = ids.indexOf(recordSelectionAnchor.value)
+    if (anchor < 0) {
+      selectedRecordIds.value = checked ? [r.id] : selectedRecordIds.value.filter((id) => id !== r.id)
+      recordSelectionAnchor.value = r.id
+      return
+    }
+    const [start, end] = anchor <= index ? [anchor, index] : [index, anchor]
+    selectedRecordIds.value = ids.slice(start, end + 1)
     return
   }
-  selectRecordByGesture(r, event)
+  const selection = new Set(selectedRecordIds.value)
+  if (checked) selection.add(r.id)
+  else selection.delete(r.id)
+  selectedRecordIds.value = event.ctrlKey || event.metaKey ? [...selection] : checked ? [r.id] : [...selection]
+  recordSelectionAnchor.value = r.id
 }
 function dragOverRecord(r) {
   if (!recordDragging.value || recordSelectionAnchor.value == null) return
@@ -767,7 +781,7 @@ window.addEventListener('mouseup', endRecordDrag)
                 class="td-select record-select-cell"
                 @mousedown.prevent="startRecordDrag(r, $event)"
                 @mouseenter="dragOverRecord(r)"
-              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @mousedown.stop @click.stop.prevent="clickRecordCheckbox(r, $event)" /></td>
+              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @mousedown.stop @click.stop="clickRecordCheckbox(r, $event)" /></td>
               <td class="td-warn">
                 <el-tooltip
                   v-if="needOwnerRemarkWarn(r)"
