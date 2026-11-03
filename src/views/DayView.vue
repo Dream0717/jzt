@@ -200,6 +200,7 @@ function selectRecordByGesture(r, event) {
 }
 function startRecordDrag(r, event) {
   if (event.button !== 0) return
+  if (event.target?.closest('input')) return
   recordDragging.value = true
   selectRecordByGesture(r, event)
 }
@@ -766,7 +767,7 @@ window.addEventListener('mouseup', endRecordDrag)
                 class="td-select record-select-cell"
                 @mousedown.prevent="startRecordDrag(r, $event)"
                 @mouseenter="dragOverRecord(r)"
-              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @click.prevent="clickRecordCheckbox(r, $event)" /></td>
+              ><input type="checkbox" :checked="selectedRecordIds.includes(r.id)" tabindex="-1" @mousedown.stop @click.stop.prevent="clickRecordCheckbox(r, $event)" /></td>
               <td class="td-warn">
                 <el-tooltip
                   v-if="needOwnerRemarkWarn(r)"
